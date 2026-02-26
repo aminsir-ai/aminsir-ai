@@ -1,0 +1,5 @@
+[
+  { "code": "ALI786", "name": "Ali", "paid": true },
+  { "code": "FAT123", "name": "Fatima", "paid": false },
+  { "code": "REH555", "name": "Rehan", "paid": true }
+]
