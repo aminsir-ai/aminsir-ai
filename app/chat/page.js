@@ -1,7 +1,10 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export default function ChatPage() {
   const router = useRouter();
@@ -15,6 +18,8 @@ export default function ChatPage() {
   const [status, setStatus] = useState("Idle");
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+
   const [topic, setTopic] = useState("");
 
   // Score UI
@@ -32,10 +37,16 @@ export default function ChatPage() {
 
   // Streak UI
   const [streakCount, setStreakCount] = useState(0);
-  const [streakLastDay, setStreakLastDay] = useState(null); // YYYY-MM-DD
+  const [streakLastDay, setStreakLastDay] = useState(null);
 
   // ⭐ Best average score (per student)
   const [bestAvg, setBestAvg] = useState(null);
+
+  // ✅ Debug (shows exactly where it stops)
+  const [debug, setDebug] = useState([]);
+  function logStep(msg) {
+    setDebug((p) => [`${new Date().toLocaleTimeString()} — ${msg}`, ...p].slice(0, 20));
+  }
 
   // ---------------- Student name ----------------
   const studentName = useMemo(() => {
@@ -43,7 +54,7 @@ export default function ChatPage() {
     if (fromUrl) return fromUrl;
 
     try {
-      const fromLs = (typeof window !== "undefined" ? localStorage.getItem("studentName") : "") || "";
+      const fromLs = localStorage.getItem("studentName") || "";
       if (fromLs.trim()) return fromLs.trim();
     } catch {}
 
@@ -66,14 +77,13 @@ export default function ChatPage() {
 
   const streakKey = useMemo(() => `streak_${safeStudentKey}`, [safeStudentKey]);
   const streakLastKey = useMemo(() => `streakLast_${safeStudentKey}`, [safeStudentKey]);
-
   const bestKey = useMemo(() => `bestScore_${safeStudentKey}`, [safeStudentKey]);
 
-  // ---------------- SESSION CONTROL ----------------
+  // ---------------- SESSION CONTROL (10 min) ----------------
   const sessionTimerRef = useRef(null);
   const sessionStartedAtRef = useRef(null);
   const sessionEndedRef = useRef(false);
-  const [timeLeft, setTimeLeft] = useState(null); // seconds left
+  const [timeLeft, setTimeLeft] = useState(null);
   const dailyLockKey = useMemo(() => `lastSessionDay_${safeStudentKey}`, [safeStudentKey]);
 
   // ---------------- Level ----------------
@@ -81,7 +91,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     try {
-      const saved = ((typeof window !== "undefined" ? localStorage.getItem(levelKey) : "") || "").toLowerCase();
+      const saved = (localStorage.getItem(levelKey) || "").toLowerCase();
       if (saved === "beginner" || saved === "medium" || saved === "advanced") setLevel(saved);
       else setLevel("beginner");
     } catch {
@@ -96,47 +106,41 @@ export default function ChatPage() {
     } catch {}
   }
 
-  // ---------------- Load history + streak + best when student changes ----------------
+  // ---------------- Load history + streak + best ----------------
   useEffect(() => {
-    // history
     try {
-      const raw = typeof window !== "undefined" ? localStorage.getItem(historyKey) : null;
+      const raw = localStorage.getItem(historyKey);
       const parsed = raw ? JSON.parse(raw) : [];
-      if (Array.isArray(parsed)) setHistory(parsed);
-      else setHistory([]);
+      setHistory(Array.isArray(parsed) ? parsed : []);
     } catch {
       setHistory([]);
     }
     setSelectedReportId(null);
 
-    // streak
     try {
-      const c = parseInt((typeof window !== "undefined" ? localStorage.getItem(streakKey) : "0") || "0", 10);
+      const c = parseInt(localStorage.getItem(streakKey) || "0", 10);
       setStreakCount(Number.isFinite(c) ? c : 0);
     } catch {
       setStreakCount(0);
     }
+
     try {
-      const d = typeof window !== "undefined" ? localStorage.getItem(streakLastKey) : null;
+      const d = localStorage.getItem(streakLastKey);
       setStreakLastDay(d || null);
     } catch {
       setStreakLastDay(null);
     }
 
-    // best
     try {
-      const b = parseFloat((typeof window !== "undefined" ? localStorage.getItem(bestKey) : "") || "");
-      if (!Number.isNaN(b)) setBestAvg(b);
-      else setBestAvg(null);
+      const b = parseFloat(localStorage.getItem(bestKey) || "");
+      setBestAvg(Number.isNaN(b) ? null : b);
     } catch {
       setBestAvg(null);
     }
 
-    // session timer reset
-    if (sessionTimerRef.current) {
-      clearInterval(sessionTimerRef.current);
-      sessionTimerRef.current = null;
-    }
+    // reset timer UI
+    if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+    sessionTimerRef.current = null;
     sessionStartedAtRef.current = null;
     sessionEndedRef.current = false;
     setTimeLeft(null);
@@ -174,12 +178,26 @@ export default function ChatPage() {
     }
   }
 
+  async function fetchWithTimeout(url, options = {}, ms = 15000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), ms);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      return res;
+    } finally {
+      clearTimeout(id);
+    }
+  }
+
   async function getEphemeralToken() {
-    const r = await fetch("/api/realtime", { method: "POST" });
+    logStep("POST /api/realtime (token)...");
+    const r = await fetchWithTimeout("/api/realtime", { method: "POST" }, 15000);
     const { json, text } = await safeJsonAny(r);
 
     if (!r.ok) throw new Error(`POST /api/realtime failed (${r.status}). Body: ${text}`);
     if (!json?.value) throw new Error(`Token missing from /api/realtime. Body: ${text}`);
+
+    logStep("Token received ✅");
     return json.value;
   }
 
@@ -187,8 +205,7 @@ export default function ChatPage() {
     if (!line) return;
     transcriptRef.current += line.trim() + "\n";
     const t = transcriptRef.current;
-    const preview = t.length > 700 ? "..." + t.slice(-700) : t;
-    setTranscriptPreview(preview);
+    setTranscriptPreview(t.length > 700 ? "..." + t.slice(-700) : t);
   }
 
   function cleanup() {
@@ -212,17 +229,17 @@ export default function ChatPage() {
     } catch {}
 
     setConnected(false);
+    setConnecting(false);
     setStatus("Idle");
   }
 
   function stopTalking() {
     setError("");
     setStatus("Stopping...");
+    logStep("Stop clicked");
 
-    if (sessionTimerRef.current) {
-      clearInterval(sessionTimerRef.current);
-      sessionTimerRef.current = null;
-    }
+    if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+    sessionTimerRef.current = null;
     sessionStartedAtRef.current = null;
     sessionEndedRef.current = false;
     setTimeLeft(null);
@@ -302,28 +319,8 @@ export default function ChatPage() {
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   }
 
-  function formatDelta(delta) {
-    if (delta === null || delta === undefined) return "";
-    const sign = delta > 0 ? "+" : "";
-    return `${sign}${delta.toFixed(1)}`;
-  }
-
-  function ymd(date = new Date()) {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, "0");
-    const d = String(date.getDate()).padStart(2, "0");
-    return `${y}-${m}-${d}`;
-  }
-
-  function addDays(ymdStr, days) {
-    const [Y, M, D] = ymdStr.split("-").map((x) => parseInt(x, 10));
-    const dt = new Date(Y, (M || 1) - 1, D || 1);
-    dt.setDate(dt.getDate() + days);
-    return ymd(dt);
-  }
-
   function updateStreakOnSuccessfulScore() {
-    const today = ymd(new Date());
+    const today = new Date().toISOString().slice(0, 10);
 
     if (!streakLastDay) {
       setStreakCount(1);
@@ -337,11 +334,8 @@ export default function ChatPage() {
 
     if (streakLastDay === today) return;
 
-    const yesterday = addDays(today, -1);
-
-    let nextCount = 1;
-    if (streakLastDay === yesterday) nextCount = Math.max(1, (streakCount || 0) + 1);
-    else nextCount = 1;
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const nextCount = streakLastDay === yesterday ? Math.max(1, (streakCount || 0) + 1) : 1;
 
     setStreakCount(nextCount);
     setStreakLastDay(today);
@@ -363,7 +357,6 @@ export default function ChatPage() {
     }
   }
 
-  // ✅ Get score via API + save to history + streak + best
   async function requestSpeakingScore() {
     setError("");
     setScoreObj(null);
@@ -378,16 +371,15 @@ export default function ChatPage() {
     setScoreStatus("Scoring... please wait");
 
     try {
-      const r = await fetch("/api/score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          studentName,
-          lesson: topic || "",
-          level,
-          transcript,
-        }),
-      });
+      const r = await fetchWithTimeout(
+        "/api/score",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ studentName, lesson: topic || "", level, transcript }),
+        },
+        20000
+      );
 
       const { json, text } = await safeJsonAny(r);
       if (!r.ok) throw new Error(`Score API failed (${r.status}). Body: ${text}`);
@@ -425,8 +417,6 @@ export default function ChatPage() {
 
   async function unlockAudio() {
     if (audioUnlockedRef.current) return true;
-    if (typeof window === "undefined") return false;
-
     const el = remoteAudioRef.current;
     if (!el) return false;
 
@@ -449,32 +439,12 @@ export default function ChatPage() {
       } catch {}
 
       audioUnlockedRef.current = true;
+      logStep("Audio unlocked ✅");
       return true;
     } catch {
+      logStep("Audio unlock failed (ok)");
       return false;
     }
-  }
-
-  // ✅ ICE wait helper (fixes mobile “Connecting…” stuck)
-  function waitForIceGatheringComplete(pc) {
-    return new Promise((resolve) => {
-      if (!pc) return resolve();
-      if (pc.iceGatheringState === "complete") return resolve();
-
-      const checkState = () => {
-        if (pc.iceGatheringState === "complete") {
-          pc.removeEventListener("icegatheringstatechange", checkState);
-          resolve();
-        }
-      };
-
-      pc.addEventListener("icegatheringstatechange", checkState);
-
-      setTimeout(() => {
-        pc.removeEventListener("icegatheringstatechange", checkState);
-        resolve();
-      }, 2500);
-    });
   }
 
   // ---------------- Start Voice (WebRTC) ----------------
@@ -483,57 +453,56 @@ export default function ChatPage() {
     setScoreObj(null);
     setScoreStatus("");
 
+    if (connecting || connected) return;
+
     if (typeof window === "undefined") return;
 
-    if (!window.isSecureContext) {
-      setError("Microphone needs HTTPS (secure connection). Open the Vercel https link.");
-      return;
-    }
-
-    if (!navigator?.mediaDevices?.getUserMedia) {
-      setError("Microphone not available on this browser. Try Chrome on mobile and allow mic permission.");
-      return;
-    }
-
-    // DAILY LOCK (1 session per day)
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const last = localStorage.getItem(dailyLockKey);
-      if (last === today) {
-        alert("You already completed today's speaking class 😊\nCome back tomorrow!");
-        return;
-      }
-    } catch {}
-
+    // IMPORTANT: show progress, not silent
+    setConnecting(true);
     setStatus("Connecting...");
-    setConnected(false);
-
-    transcriptRef.current = "";
-    setTranscriptPreview("");
-
-    if (sessionTimerRef.current) {
-      clearInterval(sessionTimerRef.current);
-      sessionTimerRef.current = null;
-    }
-    sessionStartedAtRef.current = null;
-    sessionEndedRef.current = false;
-    setTimeLeft(null);
+    logStep("Start clicked");
 
     try {
-      // Unlock audio first (mobile)
+      if (!window.isSecureContext) throw new Error("Microphone needs HTTPS (secure connection). Open the https link.");
+
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        throw new Error("Microphone not available. Use Chrome on mobile and allow mic permission.");
+      }
+
+      // ✅ DAILY LOCK (1 session per day) — you can comment this if testing
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const last = localStorage.getItem(dailyLockKey);
+        if (last === today) {
+          alert("You already completed today's speaking class 😊\nCome back tomorrow!");
+          setConnecting(false);
+          setStatus("Idle");
+          return;
+        }
+      } catch {}
+
       await unlockAudio();
 
+      // 1) MIC
+      setStatus("Connecting... (mic)");
+      logStep("Requesting mic permission...");
+      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      logStep("Mic OK ✅");
+      localStreamRef.current = localStream;
+
+      // 2) TOPIC
       const { lessonNumber, topicText } = getCourseTopic();
       const rules = getLevelRules(level);
-
       appendTranscript(`SYSTEM: Student=${studentName}, Level=${rules.label}, Lesson=${lessonNumber} (${topicText})`);
 
+      // 3) TOKEN
+      setStatus("Connecting... (token)");
       const token = await getEphemeralToken();
 
-      // ✅ FIX #1: STUN for mobile networks
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
+      // 4) PC
+      setStatus("Connecting... (webrtc)");
+      logStep("Creating RTCPeerConnection...");
+      const pc = new RTCPeerConnection();
       pcRef.current = pc;
 
       pc.ontrack = async (event) => {
@@ -548,43 +517,40 @@ export default function ChatPage() {
 
         try {
           await el.play();
-        } catch (e) {
-          console.log("Audio play blocked:", e);
-          setStatus("Connected ✅ (tap ▶ if silent)");
+          logStep("Remote audio playing ✅");
+        } catch {
+          logStep("Remote audio play blocked (tap ▶)");
         }
       };
 
-      // Mic
-      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStreamRef.current = localStream;
+      // add mic track
       for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
 
+      // 5) DATA CHANNEL
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
       dc.onopen = () => {
         setConnected(true);
+        setConnecting(false);
         setStatus("Connected ✅");
+        logStep("DataChannel open ✅");
 
-        // Start 10-minute timer ONLY after connected
+        // timer 10 min
         sessionStartedAtRef.current = Date.now();
         setTimeLeft(600);
-
         sessionTimerRef.current = setInterval(() => {
           const elapsed = Math.floor((Date.now() - sessionStartedAtRef.current) / 1000);
           const remaining = 600 - elapsed;
           setTimeLeft(remaining > 0 ? remaining : 0);
-
           if (remaining <= 0) {
-            if (sessionTimerRef.current) {
-              clearInterval(sessionTimerRef.current);
-              sessionTimerRef.current = null;
-            }
+            if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+            sessionTimerRef.current = null;
             endSessionDueToLimit();
           }
         }, 1000);
 
-        // Save daily lock date
+        // save daily lock AFTER connected
         try {
           const today = new Date().toISOString().slice(0, 10);
           localStorage.setItem(dailyLockKey, today);
@@ -612,10 +578,7 @@ Ask ONE question at a time and wait for reply.`;
             type: "session.update",
             session: {
               instructions,
-              input_audio_transcription: {
-                model: "gpt-4o-mini-transcribe",
-                language: "en",
-              },
+              input_audio_transcription: { model: "gpt-4o-mini-transcribe", language: "en" },
             },
           })
         );
@@ -628,99 +591,69 @@ Ask ONE question at a time and wait for reply.`;
           const msg = JSON.parse(ev.data);
 
           const assistantText =
-            msg?.delta ??
-            msg?.text ??
-            msg?.output_text ??
-            msg?.response?.output_text ??
-            msg?.content;
-
-          if (typeof assistantText === "string" && assistantText.trim()) {
-            appendTranscript(`AI: ${assistantText}`);
-          }
+            msg?.delta ?? msg?.text ?? msg?.output_text ?? msg?.response?.output_text ?? msg?.content;
+          if (typeof assistantText === "string" && assistantText.trim()) appendTranscript(`AI: ${assistantText}`);
 
           const tr =
             msg?.transcript ??
             msg?.input_audio_transcription?.transcript ??
             msg?.conversation?.item?.input_audio_transcription?.transcript;
-
-          if (typeof tr === "string" && tr.trim()) {
-            appendTranscript(`STUDENT: ${tr}`);
-          }
+          if (typeof tr === "string" && tr.trim()) appendTranscript(`STUDENT: ${tr}`);
         } catch {}
       };
 
       dc.onerror = () => setError("Data channel error");
       dc.onclose = () => {
         setConnected(false);
+        setConnecting(false);
         setStatus("Disconnected");
-        if (sessionTimerRef.current) {
-          clearInterval(sessionTimerRef.current);
-          sessionTimerRef.current = null;
-        }
+        logStep("DataChannel closed");
+
+        if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+        sessionTimerRef.current = null;
         setTimeLeft(null);
       };
 
-      // Create offer
+      // 6) SDP exchange
+      logStep("Creating offer...");
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // ✅ FIX #2: wait for ICE gathering (mobile needs this)
-      await waitForIceGatheringComplete(pc);
-
-      const finalSdp = pc.localDescription?.sdp || offer.sdp;
-
-      const sdpResp = await fetch("/api/realtime", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sdp: finalSdp, token }),
-      });
+      setStatus("Connecting... (SDP)");
+      logStep("PUT /api/realtime (SDP)...");
+      const sdpResp = await fetchWithTimeout(
+        "/api/realtime",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sdp: offer.sdp, token }),
+        },
+        20000
+      );
 
       const { json, text } = await safeJsonAny(sdpResp);
       if (!sdpResp.ok) throw new Error(`PUT /api/realtime failed (${sdpResp.status}). Body: ${text}`);
       if (!json?.sdp) throw new Error(`Missing answer sdp from /api/realtime. Body: ${text}`);
 
+      logStep("Answer SDP received ✅");
       await pc.setRemoteDescription({ type: "answer", sdp: json.sdp });
 
-      try {
-        await remoteAudioRef.current?.play();
-      } catch {}
-
       setStatus("Live 🎤");
+      logStep("RemoteDescription set ✅");
     } catch (e) {
+      setConnecting(false);
       setError(String(e?.message || e));
       setStatus("Error");
+      logStep(`ERROR: ${String(e?.message || e)}`);
       cleanup();
     }
   }
 
-  // ---------------- Improvement calculations ----------------
-  function getPrevReportFor(report) {
-    if (!report) return null;
-    const idx = history.findIndex((h) => h.id === report.id);
-    if (idx === -1) return null;
-    return history[idx + 1] || null;
-  }
-
-  function getDeltaFor(report) {
-    const prev = getPrevReportFor(report);
-    const curAvg = getAvg(report?.scores);
-    const prevAvg = getAvg(prev?.scores);
-    if (curAvg === null || prevAvg === null) return null;
-    return curAvg - prevAvg;
-  }
-
-  const selectedDelta = useMemo(() => {
-    if (!selectedReport) return null;
-    return getDeltaFor(selectedReport);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedReportId, history]);
-
+  // cleanup on exit
   useEffect(() => {
     return () => {
-      if (sessionTimerRef.current) {
-        clearInterval(sessionTimerRef.current);
-        sessionTimerRef.current = null;
-      }
+      if (sessionTimerRef.current) clearInterval(sessionTimerRef.current);
+      sessionTimerRef.current = null;
       cleanup();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -729,17 +662,17 @@ Ask ONE question at a time and wait for reply.`;
   const showMobileStart = !connected;
 
   return (
-    <main style={{ minHeight: "100vh", padding: 24, display: "grid", placeItems: "center" }}>
+    <main style={{ minHeight: "100vh", padding: 16, display: "grid", placeItems: "center" }}>
       <div style={{ width: "100%", maxWidth: 1100, border: "1px solid #e5e7eb", borderRadius: 18, padding: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontSize: 24, fontWeight: 800 }}>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>
               Welcome, {studentName} 👋{" "}
               <span style={{ fontSize: 14, fontWeight: 900, marginLeft: 10 }}>
                 🔥 Streak: {streakCount} day{streakCount === 1 ? "" : "s"}
               </span>
               <span style={{ fontSize: 14, fontWeight: 900, marginLeft: 14 }}>
-                {bestAvg === null ? <>⭐ Best: Not set</> : bestAvg >= 4.5 ? <>🏆 Best: {bestAvg.toFixed(1)}/5</> : <>⭐ Best: {bestAvg.toFixed(1)}/5</>}
+                {bestAvg === null ? "⭐ Best: Not set" : bestAvg >= 4.5 ? `🏆 Best: ${bestAvg.toFixed(1)}/5` : `⭐ Best: ${bestAvg.toFixed(1)}/5`}
               </span>
             </div>
 
@@ -763,13 +696,14 @@ Ask ONE question at a time and wait for reply.`;
               <label style={{ fontSize: 14, fontWeight: 700 }}>Level:</label>
               <select
                 value={level}
+                disabled={connecting || connected}
                 onChange={(e) => onChangeLevel(e.target.value)}
                 style={{
                   padding: "10px 12px",
                   borderRadius: 12,
                   border: "1px solid #d1d5db",
                   background: "white",
-                  cursor: "pointer",
+                  cursor: connecting || connected ? "not-allowed" : "pointer",
                   fontWeight: 700,
                 }}
               >
@@ -828,17 +762,18 @@ Ask ONE question at a time and wait for reply.`;
             {!connected ? (
               <button
                 onClick={startTalking}
+                disabled={connecting}
                 style={{
                   padding: "10px 14px",
                   borderRadius: 12,
                   border: "none",
-                  cursor: "pointer",
+                  cursor: connecting ? "not-allowed" : "pointer",
                   fontWeight: 900,
-                  background: "#16a34a",
+                  background: connecting ? "#94a3b8" : "#16a34a",
                   color: "white",
                 }}
               >
-                Start Voice 🎤
+                {connecting ? "Connecting..." : "Start Voice 🎤"}
               </button>
             ) : (
               <button
@@ -880,7 +815,7 @@ Ask ONE question at a time and wait for reply.`;
           <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 8 }}>AI Voice Output</div>
           <audio ref={remoteAudioRef} autoPlay playsInline controls />
           <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-            If iPhone is silent, tap the ▶ play button once.
+            If mobile is silent, tap the ▶ play once.
           </div>
         </div>
 
@@ -892,166 +827,15 @@ Ask ONE question at a time and wait for reply.`;
           </pre>
         </div>
 
-        {/* HISTORY + IMPROVEMENT */}
-        <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 900 }}>History (Last {Math.min(history.length, 10)})</div>
-            <button
-              onClick={clearHistory}
-              disabled={history.length === 0}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 10,
-                border: "1px solid #d1d5db",
-                background: history.length === 0 ? "#f3f4f6" : "white",
-                cursor: history.length === 0 ? "not-allowed" : "pointer",
-                fontWeight: 800,
-              }}
-              title="Clear only this student's history"
-            >
-              Clear History
-            </button>
-          </div>
-
-          {history.length === 0 ? (
-            <div style={{ marginTop: 10, fontSize: 13, color: "#6b7280" }}>No reports yet. Generate a score once and it will save here.</div>
-          ) : (
-            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ background: "#f9fafb" }}>
-                      <th style={thStyle}>Date</th>
-                      <th style={thStyle}>Lesson</th>
-                      <th style={thStyle}>Level</th>
-                      <th style={thStyle}>Avg</th>
-                      <th style={thStyle}>Change</th>
-                      <th style={thStyle}></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {history.map((h) => {
-                      const avg = getAvg(h.scores);
-                      const avgTxt = avg === null ? "-" : `${avg.toFixed(1)}/5`;
-
-                      const delta = getDeltaFor(h);
-                      const deltaTxt = delta === null ? "—" : formatDelta(delta);
-                      const arrow = delta === null ? "" : delta > 0 ? "▲" : delta < 0 ? "▼" : "•";
-
-                      const isSel = h.id === selectedReportId;
-
-                      return (
-                        <tr key={h.id} style={{ background: isSel ? "#eef2ff" : "white" }}>
-                          <td style={tdStyle}>{formatDateTime(h.ts)}</td>
-                          <td style={tdStyle}>{h.lesson || "-"}</td>
-                          <td style={tdStyle}>{h.level || "-"}</td>
-                          <td style={tdStyle}>{avgTxt}</td>
-                          <td style={tdStyle}>
-                            {delta === null ? (
-                              <span style={{ color: "#6b7280" }}>—</span>
-                            ) : (
-                              <span style={{ fontWeight: 900 }}>
-                                {arrow} {deltaTxt}
-                              </span>
-                            )}
-                          </td>
-                          <td style={{ ...tdStyle, textAlign: "right" }}>
-                            <button
-                              onClick={() => setSelectedReportId(h.id)}
-                              style={{
-                                padding: "6px 10px",
-                                borderRadius: 10,
-                                border: "1px solid #d1d5db",
-                                background: "white",
-                                cursor: "pointer",
-                                fontWeight: 800,
-                              }}
-                            >
-                              View
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {selectedReport ? (
-                <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 900 }}>
-                      Report: {formatDateTime(selectedReport.ts)} — {selectedReport.lesson || ""}
-                    </div>
-                    <div style={{ color: "#6b7280", fontSize: 13 }}>Student: {selectedReport.student}</div>
-                  </div>
-
-                  <div style={{ marginTop: 10, padding: 10, borderRadius: 12, border: "1px dashed #d1d5db" }}>
-                    <b>Improvement vs last time:</b>{" "}
-                    {selectedDelta === null ? (
-                      <span style={{ color: "#6b7280" }}>Not enough reports yet.</span>
-                    ) : (
-                      <span style={{ fontWeight: 900 }}>
-                        {selectedDelta > 0 ? "▲" : selectedDelta < 0 ? "▼" : "•"} {formatDelta(selectedDelta)}
-                      </span>
-                    )}
-                  </div>
-
-                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-                    <ScoreCard title="Pronunciation" value={selectedReport?.scores?.pronunciation} />
-                    <ScoreCard title="Grammar" value={selectedReport?.scores?.grammar} />
-                    <ScoreCard title="Fluency" value={selectedReport?.scores?.fluency} />
-                    <ScoreCard title="Confidence" value={selectedReport?.scores?.confidence} />
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <b>Strengths:</b>
-                    <ul style={{ marginTop: 6 }}>
-                      {(selectedReport.strengths || []).map((s, i) => (
-                        <li key={i}>{s}</li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <b>Improvements:</b>
-                    <ul style={{ marginTop: 6 }}>
-                      {(selectedReport.improvements || []).map((s, i) => (
-                        <li key={i}>{s}</li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  {Array.isArray(selectedReport.corrected_sentences) && selectedReport.corrected_sentences.length ? (
-                    <div style={{ marginTop: 12 }}>
-                      <b>Corrections:</b>
-                      <ul style={{ marginTop: 6 }}>
-                        {selectedReport.corrected_sentences.slice(0, 3).map((c, i) => (
-                          <li key={i}>
-                            <div>
-                              <i>Student said:</i> {c.student_said}
-                            </div>
-                            <div>
-                              <i>Better:</i> {c.better}
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
-                  {selectedReport.homework ? (
-                    <div style={{ marginTop: 12, padding: 10, borderRadius: 12, border: "1px dashed #d1d5db" }}>
-                      <b>Homework:</b> {selectedReport.homework}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          )}
+        {/* Debug box */}
+        <div style={{ marginTop: 16, padding: 12, borderRadius: 12, border: "1px solid #e5e7eb" }}>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>Debug (screenshot this if stuck)</div>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "#374151" }}>
+            {debug.length ? debug.join("\n") : "No debug yet"}
+          </pre>
         </div>
 
-        {/* CURRENT SCORE */}
+        {/* CURRENT SCORE (simple) */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900 }}>Speaking Score</div>
@@ -1059,23 +843,21 @@ Ask ONE question at a time and wait for reply.`;
           </div>
 
           {scoreObj ? (
-            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-                <ScoreCard title="Pronunciation" value={scoreObj?.scores?.pronunciation} />
-                <ScoreCard title="Grammar" value={scoreObj?.scores?.grammar} />
-                <ScoreCard title="Fluency" value={scoreObj?.scores?.fluency} />
-                <ScoreCard title="Confidence" value={scoreObj?.scores?.confidence} />
-              </div>
+            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+              <ScoreCard title="Pronunciation" value={scoreObj?.scores?.pronunciation} />
+              <ScoreCard title="Grammar" value={scoreObj?.scores?.grammar} />
+              <ScoreCard title="Fluency" value={scoreObj?.scores?.fluency} />
+              <ScoreCard title="Confidence" value={scoreObj?.scores?.confidence} />
             </div>
           ) : (
             <div style={{ marginTop: 10, fontSize: 13, color: "#6b7280" }}>
-              Click <b>Get Speaking Score</b> after the student speaks for 30–60 seconds.
+              Click <b>Get Speaking Score</b> after speaking 30–60 seconds.
             </div>
           )}
         </div>
       </div>
 
-      {/* ✅ MOBILE STICKY START BUTTON */}
+      {/* MOBILE STICKY START BUTTON */}
       <div
         style={{
           position: "fixed",
@@ -1090,9 +872,10 @@ Ask ONE question at a time and wait for reply.`;
           zIndex: 9999,
         }}
       >
-        {showMobileStart ? (
+        {!connected ? (
           <button
             onClick={startTalking}
+            disabled={connecting}
             style={{
               width: "min(520px, 92vw)",
               padding: "14px 16px",
@@ -1100,12 +883,12 @@ Ask ONE question at a time and wait for reply.`;
               border: "none",
               fontWeight: 900,
               fontSize: 16,
-              background: "#16a34a",
+              background: connecting ? "#94a3b8" : "#16a34a",
               color: "white",
-              cursor: "pointer",
+              cursor: connecting ? "not-allowed" : "pointer",
             }}
           >
-            START VOICE 🎤 (Tap & Allow Mic)
+            {connecting ? "CONNECTING..." : "START VOICE 🎤 (Tap & Allow Mic)"}
           </button>
         ) : (
           <button
@@ -1128,18 +911,6 @@ Ask ONE question at a time and wait for reply.`;
       </div>
     </main>
   );
-}
-
-const thStyle = { textAlign: "left", padding: 10, fontSize: 13, color: "#374151" };
-const tdStyle = { padding: 10, borderTop: "1px solid #e5e7eb", fontSize: 13, color: "#111827" };
-
-function formatDateTime(ts) {
-  try {
-    const d = new Date(ts);
-    return d.toLocaleString();
-  } catch {
-    return "";
-  }
 }
 
 function ScoreCard({ title, value }) {
