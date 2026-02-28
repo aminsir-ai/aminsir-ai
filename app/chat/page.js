@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -43,8 +46,8 @@ export default function ChatPage() {
     if (fromUrl) return fromUrl;
 
     try {
-      const fromLs = (localStorage.getItem("studentName") || "").trim();
-      if (fromLs) return fromLs;
+      const fromLs = (typeof window !== "undefined" ? localStorage.getItem("studentName") : "") || "";
+      if (fromLs.trim()) return fromLs.trim();
     } catch {}
 
     return "Student";
@@ -83,7 +86,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     try {
-      const saved = (localStorage.getItem(levelKey) || "").toLowerCase();
+      const saved = ((typeof window !== "undefined" ? localStorage.getItem(levelKey) : "") || "").toLowerCase();
       if (saved === "beginner" || saved === "medium" || saved === "advanced") setLevel(saved);
       else setLevel("beginner");
     } catch {
@@ -102,7 +105,7 @@ export default function ChatPage() {
   useEffect(() => {
     // history
     try {
-      const raw = localStorage.getItem(historyKey);
+      const raw = typeof window !== "undefined" ? localStorage.getItem(historyKey) : null;
       const parsed = raw ? JSON.parse(raw) : [];
       if (Array.isArray(parsed)) setHistory(parsed);
       else setHistory([]);
@@ -113,13 +116,13 @@ export default function ChatPage() {
 
     // streak
     try {
-      const c = parseInt(localStorage.getItem(streakKey) || "0", 10);
+      const c = parseInt((typeof window !== "undefined" ? localStorage.getItem(streakKey) : "0") || "0", 10);
       setStreakCount(Number.isFinite(c) ? c : 0);
     } catch {
       setStreakCount(0);
     }
     try {
-      const d = localStorage.getItem(streakLastKey);
+      const d = typeof window !== "undefined" ? localStorage.getItem(streakLastKey) : null;
       setStreakLastDay(d || null);
     } catch {
       setStreakLastDay(null);
@@ -127,7 +130,7 @@ export default function ChatPage() {
 
     // best
     try {
-      const b = parseFloat(localStorage.getItem(bestKey));
+      const b = parseFloat((typeof window !== "undefined" ? localStorage.getItem(bestKey) : "") || "");
       if (!Number.isNaN(b)) setBestAvg(b);
       else setBestAvg(null);
     } catch {
@@ -296,9 +299,7 @@ export default function ChatPage() {
 
   function getAvg(scores) {
     const s = scores || {};
-    const vals = [s.pronunciation, s.grammar, s.fluency, s.confidence].filter(
-      (x) => typeof x === "number"
-    );
+    const vals = [s.pronunciation, s.grammar, s.fluency, s.confidence].filter((x) => typeof x === "number");
     if (!vals.length) return null;
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   }
@@ -341,11 +342,8 @@ export default function ChatPage() {
     const yesterday = addDays(today, -1);
 
     let nextCount = 1;
-    if (streakLastDay === yesterday) {
-      nextCount = Math.max(1, (streakCount || 0) + 1);
-    } else {
-      nextCount = 1;
-    }
+    if (streakLastDay === yesterday) nextCount = Math.max(1, (streakCount || 0) + 1);
+    else nextCount = 1;
 
     setStreakCount(nextCount);
     setStreakLastDay(today);
@@ -374,7 +372,7 @@ export default function ChatPage() {
 
     const transcript = transcriptRef.current.trim();
     if (transcript.length < 20) {
-      setError("Transcript too short. Start Talking and speak 30–60 seconds first.");
+      setError("Transcript too short. Start Voice and speak 30–60 seconds first.");
       return;
     }
 
@@ -414,8 +412,6 @@ export default function ChatPage() {
       };
 
       addToHistory(report);
-
-      // ✅ update streak & best only on success
       updateStreakOnSuccessfulScore();
       updateBestOnSuccessfulScore(report.scores);
     } catch (e) {
@@ -426,11 +422,26 @@ export default function ChatPage() {
     }
   }
 
-  // ---------------- Start Talking ----------------
+  // ---------------- Start Voice (WebRTC) ----------------
   async function startTalking() {
     setError("");
     setScoreObj(null);
     setScoreStatus("");
+
+    // ✅ must be browser
+    if (typeof window === "undefined") return;
+
+    // ✅ must be https / secure context for mic (Vercel is https)
+    if (!window.isSecureContext) {
+      setError("Microphone needs HTTPS (secure connection). Open the Vercel https link.");
+      return;
+    }
+
+    // ✅ navigator media check (prevents getUserMedia undefined)
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      setError("Microphone not available on this browser. Try Chrome on mobile and allow mic permission.");
+      return;
+    }
 
     // ✅ DAILY LOCK (1 session per day)
     try {
@@ -461,9 +472,7 @@ export default function ChatPage() {
       const { lessonNumber, topicText } = getCourseTopic();
       const rules = getLevelRules(level);
 
-      appendTranscript(
-        `SYSTEM: Student=${studentName}, Level=${rules.label}, Lesson=${lessonNumber} (${topicText})`
-      );
+      appendTranscript(`SYSTEM: Student=${studentName}, Level=${rules.label}, Lesson=${lessonNumber} (${topicText})`);
 
       const token = await getEphemeralToken();
 
@@ -474,6 +483,7 @@ export default function ChatPage() {
         if (remoteAudioRef.current) remoteAudioRef.current.srcObject = event.streams[0];
       };
 
+      // ✅ mic permission prompt
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = localStream;
       for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
@@ -613,7 +623,6 @@ Ask ONE question at a time and wait for reply.`;
     if (!report) return null;
     const idx = history.findIndex((h) => h.id === report.id);
     if (idx === -1) return null;
-    // history is newest first, so "previous" means next index
     return history[idx + 1] || null;
   }
 
@@ -642,6 +651,8 @@ Ask ONE question at a time and wait for reply.`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const showMobileStart = !connected;
+
   return (
     <main style={{ minHeight: "100vh", padding: 24, display: "grid", placeItems: "center" }}>
       <div style={{ width: "100%", maxWidth: 1100, border: "1px solid #e5e7eb", borderRadius: 18, padding: 18 }}>
@@ -653,13 +664,7 @@ Ask ONE question at a time and wait for reply.`;
                 🔥 Streak: {streakCount} day{streakCount === 1 ? "" : "s"}
               </span>
               <span style={{ fontSize: 14, fontWeight: 900, marginLeft: 14 }}>
-                {bestAvg === null ? (
-                  <>⭐ Best: Not set</>
-                ) : bestAvg >= 4.5 ? (
-                  <>🏆 Best: {bestAvg.toFixed(1)}/5</>
-                ) : (
-                  <>⭐ Best: {bestAvg.toFixed(1)}/5</>
-                )}
+                {bestAvg === null ? <>⭐ Best: Not set</> : bestAvg >= 4.5 ? <>🏆 Best: {bestAvg.toFixed(1)}/5</> : <>⭐ Best: {bestAvg.toFixed(1)}/5</>}
               </span>
             </div>
 
@@ -677,7 +682,7 @@ Ask ONE question at a time and wait for reply.`;
                 <b>Course Progress:</b> {topic}
               </div>
             ) : (
-              <div style={{ marginTop: 6, fontSize: 14, color: "#6b7280" }}>Click Start Talking to begin.</div>
+              <div style={{ marginTop: 6, fontSize: 14, color: "#6b7280" }}>Click Start Voice to begin.</div>
             )}
 
             <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -746,28 +751,27 @@ Ask ONE question at a time and wait for reply.`;
               {scoring ? "Scoring..." : "Get Speaking Score"}
             </button>
 
-            {/* ✅ MOBILE VISIBLE VOICE BUTTONS */}
             {!connected ? (
               <button
                 onClick={startTalking}
                 style={{
-                  padding: "12px 18px",
-                  borderRadius: 14,
+                  padding: "10px 14px",
+                  borderRadius: 12,
                   border: "none",
                   cursor: "pointer",
                   fontWeight: 900,
-                  background: "#22c55e",
+                  background: "#16a34a",
                   color: "white",
                 }}
               >
-                🎤 START VOICE (Start Talking)
+                Start Voice 🎤
               </button>
             ) : (
               <button
                 onClick={stopTalking}
                 style={{
-                  padding: "12px 18px",
-                  borderRadius: 14,
+                  padding: "10px 14px",
+                  borderRadius: 12,
                   border: "none",
                   cursor: "pointer",
                   fontWeight: 900,
@@ -775,7 +779,7 @@ Ask ONE question at a time and wait for reply.`;
                   color: "white",
                 }}
               >
-                ⛔ STOP VOICE
+                Stop
               </button>
             )}
           </div>
@@ -807,7 +811,7 @@ Ask ONE question at a time and wait for reply.`;
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
           <div style={{ fontWeight: 800, marginBottom: 6 }}>Transcript (preview)</div>
           <pre style={{ whiteSpace: "pre-wrap", overflowX: "auto", fontSize: 13, color: "#374151" }}>
-            {transcriptPreview || "Start Talking to capture transcript..."}
+            {transcriptPreview || "Start Voice to capture transcript..."}
           </pre>
         </div>
 
@@ -986,6 +990,58 @@ Ask ONE question at a time and wait for reply.`;
             </div>
           )}
         </div>
+      </div>
+
+      {/* ✅ MOBILE STICKY START BUTTON (very visible) */}
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          padding: 12,
+          background: "rgba(0,0,0,0.55)",
+          backdropFilter: "blur(6px)",
+          display: "flex",
+          justifyContent: "center",
+          zIndex: 9999,
+        }}
+      >
+        {showMobileStart ? (
+          <button
+            onClick={startTalking}
+            style={{
+              width: "min(520px, 92vw)",
+              padding: "14px 16px",
+              borderRadius: 14,
+              border: "none",
+              fontWeight: 900,
+              fontSize: 16,
+              background: "#16a34a",
+              color: "white",
+              cursor: "pointer",
+            }}
+          >
+            START VOICE 🎤 (Tap & Allow Mic)
+          </button>
+        ) : (
+          <button
+            onClick={stopTalking}
+            style={{
+              width: "min(520px, 92vw)",
+              padding: "14px 16px",
+              borderRadius: 14,
+              border: "none",
+              fontWeight: 900,
+              fontSize: 16,
+              background: "#ef4444",
+              color: "white",
+              cursor: "pointer",
+            }}
+          >
+            STOP VOICE
+          </button>
+        )}
       </div>
     </main>
   );
