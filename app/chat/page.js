@@ -1,6 +1,3 @@
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -212,6 +209,10 @@ export default function ChatPage() {
     } catch {}
     localStreamRef.current = null;
 
+    try {
+      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    } catch {}
+
     setConnected(false);
     setStatus("Idle");
   }
@@ -422,22 +423,54 @@ export default function ChatPage() {
     }
   }
 
+  // ---------------- Mobile Audio Unlock (IMPORTANT) ----------------
+  const audioUnlockedRef = useRef(false);
+
+  async function unlockAudio() {
+    if (audioUnlockedRef.current) return true;
+    if (typeof window === "undefined") return false;
+
+    const el = remoteAudioRef.current;
+    if (!el) return false;
+
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        const ctx = new AC();
+        if (ctx.state === "suspended") await ctx.resume();
+        const buffer = ctx.createBuffer(1, 1, 22050);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start(0);
+        source.stop(0);
+        if (ctx.close) await ctx.close();
+      }
+
+      try {
+        await el.play();
+      } catch {}
+
+      audioUnlockedRef.current = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // ---------------- Start Voice (WebRTC) ----------------
   async function startTalking() {
     setError("");
     setScoreObj(null);
     setScoreStatus("");
 
-    // ✅ must be browser
     if (typeof window === "undefined") return;
 
-    // ✅ must be https / secure context for mic (Vercel is https)
     if (!window.isSecureContext) {
       setError("Microphone needs HTTPS (secure connection). Open the Vercel https link.");
       return;
     }
 
-    // ✅ navigator media check (prevents getUserMedia undefined)
     if (!navigator?.mediaDevices?.getUserMedia) {
       setError("Microphone not available on this browser. Try Chrome on mobile and allow mic permission.");
       return;
@@ -459,7 +492,6 @@ export default function ChatPage() {
     transcriptRef.current = "";
     setTranscriptPreview("");
 
-    // reset session timer guards
     if (sessionTimerRef.current) {
       clearInterval(sessionTimerRef.current);
       sessionTimerRef.current = null;
@@ -469,6 +501,8 @@ export default function ChatPage() {
     setTimeLeft(null);
 
     try {
+      await unlockAudio();
+
       const { lessonNumber, topicText } = getCourseTopic();
       const rules = getLevelRules(level);
 
@@ -479,11 +513,24 @@ export default function ChatPage() {
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
 
-      pc.ontrack = (event) => {
-        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = event.streams[0];
+      pc.ontrack = async (event) => {
+        const el = remoteAudioRef.current;
+        const stream = event.streams?.[0];
+        if (!el || !stream) return;
+
+        el.srcObject = stream;
+        el.autoplay = true;
+        el.muted = false;
+        el.playsInline = true;
+
+        try {
+          await el.play();
+        } catch (e) {
+          console.log("Audio play blocked:", e);
+          setStatus("Connected ✅ (tap ▶ if silent)");
+        }
       };
 
-      // ✅ mic permission prompt
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = localStream;
       for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
@@ -495,9 +542,8 @@ export default function ChatPage() {
         setConnected(true);
         setStatus("Connected ✅");
 
-        // ✅ Start 10-minute timer ONLY after connected
         sessionStartedAtRef.current = Date.now();
-        setTimeLeft(600); // seconds
+        setTimeLeft(600);
 
         sessionTimerRef.current = setInterval(() => {
           const elapsed = Math.floor((Date.now() - sessionStartedAtRef.current) / 1000);
@@ -513,7 +559,6 @@ export default function ChatPage() {
           }
         }, 1000);
 
-        // ✅ Save daily lock date (so only 1 session/day)
         try {
           const today = new Date().toISOString().slice(0, 10);
           localStorage.setItem(dailyLockKey, today);
@@ -541,45 +586,27 @@ Ask ONE question at a time and wait for reply.`;
             type: "session.update",
             session: {
               instructions,
-              input_audio_transcription: {
-                model: "gpt-4o-mini-transcribe",
-                language: "en",
-              },
+              input_audio_transcription: { model: "gpt-4o-mini-transcribe", language: "en" },
             },
           })
         );
 
-        dc.send(
-          JSON.stringify({
-            type: "response.create",
-            response: { modalities: ["text", "audio"] },
-          })
-        );
+        dc.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
       };
 
       dc.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
 
-          const assistantText =
-            msg?.delta ??
-            msg?.text ??
-            msg?.output_text ??
-            msg?.response?.output_text ??
-            msg?.content;
-
-          if (typeof assistantText === "string" && assistantText.trim()) {
-            appendTranscript(`AI: ${assistantText}`);
-          }
+          const assistantText = msg?.delta ?? msg?.text ?? msg?.output_text ?? msg?.response?.output_text ?? msg?.content;
+          if (typeof assistantText === "string" && assistantText.trim()) appendTranscript(`AI: ${assistantText}`);
 
           const tr =
             msg?.transcript ??
             msg?.input_audio_transcription?.transcript ??
             msg?.conversation?.item?.input_audio_transcription?.transcript;
 
-          if (typeof tr === "string" && tr.trim()) {
-            appendTranscript(`STUDENT: ${tr}`);
-          }
+          if (typeof tr === "string" && tr.trim()) appendTranscript(`STUDENT: ${tr}`);
         } catch {}
       };
 
@@ -587,8 +614,6 @@ Ask ONE question at a time and wait for reply.`;
       dc.onclose = () => {
         setConnected(false);
         setStatus("Disconnected");
-
-        // stop timer if disconnected
         if (sessionTimerRef.current) {
           clearInterval(sessionTimerRef.current);
           sessionTimerRef.current = null;
@@ -610,6 +635,11 @@ Ask ONE question at a time and wait for reply.`;
       if (!json?.sdp) throw new Error(`Missing answer sdp from /api/realtime. Body: ${text}`);
 
       await pc.setRemoteDescription({ type: "answer", sdp: json.sdp });
+
+      try {
+        await remoteAudioRef.current?.play();
+      } catch {}
+
       setStatus("Live 🎤");
     } catch (e) {
       setError(String(e?.message || e));
@@ -670,7 +700,6 @@ Ask ONE question at a time and wait for reply.`;
 
             <div style={{ color: "#6b7280", marginTop: 4 }}>Status: {status}</div>
 
-            {/* ✅ 10-minute countdown */}
             {timeLeft !== null && (
               <div style={{ marginTop: 6, fontWeight: 800, color: "#b91c1c" }}>
                 ⏱ Time left: {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, "0")}
@@ -801,13 +830,12 @@ Ask ONE question at a time and wait for reply.`;
           </pre>
         ) : null}
 
-        {/* AI Voice */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px dashed #d1d5db" }}>
           <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 8 }}>AI Voice Output</div>
-          <audio ref={remoteAudioRef} autoPlay controls />
+          <audio ref={remoteAudioRef} autoPlay playsInline controls />
+          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>If iPhone is silent, tap the ▶ play button once.</div>
         </div>
 
-        {/* Transcript preview */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
           <div style={{ fontWeight: 800, marginBottom: 6 }}>Transcript (preview)</div>
           <pre style={{ whiteSpace: "pre-wrap", overflowX: "auto", fontSize: 13, color: "#374151" }}>
@@ -815,7 +843,6 @@ Ask ONE question at a time and wait for reply.`;
           </pre>
         </div>
 
-        {/* HISTORY + IMPROVEMENT */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900 }}>History (Last {Math.min(history.length, 10)})</div>
@@ -830,7 +857,6 @@ Ask ONE question at a time and wait for reply.`;
                 cursor: history.length === 0 ? "not-allowed" : "pointer",
                 fontWeight: 800,
               }}
-              title="Clear only this student's history"
             >
               Clear History
             </button>
@@ -858,11 +884,9 @@ Ask ONE question at a time and wait for reply.`;
                     {history.map((h) => {
                       const avg = getAvg(h.scores);
                       const avgTxt = avg === null ? "-" : `${avg.toFixed(1)}/5`;
-
                       const delta = getDeltaFor(h);
                       const deltaTxt = delta === null ? "—" : formatDelta(delta);
                       const arrow = delta === null ? "" : delta > 0 ? "▲" : delta < 0 ? "▼" : "•";
-
                       const isSel = h.id === selectedReportId;
 
                       return (
@@ -901,74 +925,10 @@ Ask ONE question at a time and wait for reply.`;
                   </tbody>
                 </table>
               </div>
-
-              {selectedReport ? (
-                <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 900 }}>
-                      Report: {formatDateTime(selectedReport.ts)} — {selectedReport.lesson || ""}
-                    </div>
-                    <div style={{ color: "#6b7280", fontSize: 13 }}>Student: {selectedReport.student}</div>
-                  </div>
-
-                  <div style={{ marginTop: 10, padding: 10, borderRadius: 12, border: "1px dashed #d1d5db" }}>
-                    <b>Improvement vs last time:</b>{" "}
-                    {selectedDelta === null ? (
-                      <span style={{ color: "#6b7280" }}>Not enough reports yet.</span>
-                    ) : (
-                      <span style={{ fontWeight: 900 }}>
-                        {selectedDelta > 0 ? "▲" : selectedDelta < 0 ? "▼" : "•"} {formatDelta(selectedDelta)}
-                      </span>
-                    )}
-                  </div>
-
-                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-                    <ScoreCard title="Pronunciation" value={selectedReport?.scores?.pronunciation} />
-                    <ScoreCard title="Grammar" value={selectedReport?.scores?.grammar} />
-                    <ScoreCard title="Fluency" value={selectedReport?.scores?.fluency} />
-                    <ScoreCard title="Confidence" value={selectedReport?.scores?.confidence} />
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <b>Strengths:</b>
-                    <ul style={{ marginTop: 6 }}>
-                      {(selectedReport.strengths || []).map((s, i) => <li key={i}>{s}</li>)}
-                    </ul>
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <b>Improvements:</b>
-                    <ul style={{ marginTop: 6 }}>
-                      {(selectedReport.improvements || []).map((s, i) => <li key={i}>{s}</li>)}
-                    </ul>
-                  </div>
-
-                  {Array.isArray(selectedReport.corrected_sentences) && selectedReport.corrected_sentences.length ? (
-                    <div style={{ marginTop: 12 }}>
-                      <b>Corrections:</b>
-                      <ul style={{ marginTop: 6 }}>
-                        {selectedReport.corrected_sentences.slice(0, 3).map((c, i) => (
-                          <li key={i}>
-                            <div><i>Student said:</i> {c.student_said}</div>
-                            <div><i>Better:</i> {c.better}</div>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
-                  {selectedReport.homework ? (
-                    <div style={{ marginTop: 12, padding: 10, borderRadius: 12, border: "1px dashed #d1d5db" }}>
-                      <b>Homework:</b> {selectedReport.homework}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
             </div>
           )}
         </div>
 
-        {/* CURRENT SCORE */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900 }}>Speaking Score</div>
@@ -992,7 +952,6 @@ Ask ONE question at a time and wait for reply.`;
         </div>
       </div>
 
-      {/* ✅ MOBILE STICKY START BUTTON (very visible) */}
       <div
         style={{
           position: "fixed",
