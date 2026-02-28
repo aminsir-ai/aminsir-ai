@@ -64,17 +64,15 @@ export default function ChatPage() {
   const levelKey = useMemo(() => `level_${safeStudentKey}`, [safeStudentKey]);
   const historyKey = useMemo(() => `scoreHistory_${safeStudentKey}`, [safeStudentKey]);
 
-  // ✅ Streak keys
   const streakKey = useMemo(() => `streak_${safeStudentKey}`, [safeStudentKey]);
   const streakLastKey = useMemo(() => `streakLast_${safeStudentKey}`, [safeStudentKey]);
 
-  // ✅ Best score key
   const bestKey = useMemo(() => `bestScore_${safeStudentKey}`, [safeStudentKey]);
 
-  // ---------------- SESSION CONTROL (FINANCIAL SAFETY LOCK) ----------------
-  const sessionTimerRef = useRef(null); // interval id
-  const sessionStartedAtRef = useRef(null); // timestamp when session started
-  const sessionEndedRef = useRef(false); // guard (avoid double alerts)
+  // ---------------- SESSION CONTROL ----------------
+  const sessionTimerRef = useRef(null);
+  const sessionStartedAtRef = useRef(null);
+  const sessionEndedRef = useRef(false);
   const [timeLeft, setTimeLeft] = useState(null); // seconds left
   const dailyLockKey = useMemo(() => `lastSessionDay_${safeStudentKey}`, [safeStudentKey]);
 
@@ -221,7 +219,6 @@ export default function ChatPage() {
     setError("");
     setStatus("Stopping...");
 
-    // ✅ stop session timer
     if (sessionTimerRef.current) {
       clearInterval(sessionTimerRef.current);
       sessionTimerRef.current = null;
@@ -423,7 +420,7 @@ export default function ChatPage() {
     }
   }
 
-  // ---------------- Mobile Audio Unlock (IMPORTANT) ----------------
+  // ---------------- Mobile Audio Unlock ----------------
   const audioUnlockedRef = useRef(false);
 
   async function unlockAudio() {
@@ -458,6 +455,28 @@ export default function ChatPage() {
     }
   }
 
+  // ✅ ICE wait helper (fixes mobile “Connecting…” stuck)
+  function waitForIceGatheringComplete(pc) {
+    return new Promise((resolve) => {
+      if (!pc) return resolve();
+      if (pc.iceGatheringState === "complete") return resolve();
+
+      const checkState = () => {
+        if (pc.iceGatheringState === "complete") {
+          pc.removeEventListener("icegatheringstatechange", checkState);
+          resolve();
+        }
+      };
+
+      pc.addEventListener("icegatheringstatechange", checkState);
+
+      setTimeout(() => {
+        pc.removeEventListener("icegatheringstatechange", checkState);
+        resolve();
+      }, 2500);
+    });
+  }
+
   // ---------------- Start Voice (WebRTC) ----------------
   async function startTalking() {
     setError("");
@@ -476,7 +495,7 @@ export default function ChatPage() {
       return;
     }
 
-    // ✅ DAILY LOCK (1 session per day)
+    // DAILY LOCK (1 session per day)
     try {
       const today = new Date().toISOString().slice(0, 10);
       const last = localStorage.getItem(dailyLockKey);
@@ -501,6 +520,7 @@ export default function ChatPage() {
     setTimeLeft(null);
 
     try {
+      // Unlock audio first (mobile)
       await unlockAudio();
 
       const { lessonNumber, topicText } = getCourseTopic();
@@ -510,7 +530,10 @@ export default function ChatPage() {
 
       const token = await getEphemeralToken();
 
-      const pc = new RTCPeerConnection();
+      // ✅ FIX #1: STUN for mobile networks
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
       pcRef.current = pc;
 
       pc.ontrack = async (event) => {
@@ -531,6 +554,7 @@ export default function ChatPage() {
         }
       };
 
+      // Mic
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = localStream;
       for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
@@ -542,6 +566,7 @@ export default function ChatPage() {
         setConnected(true);
         setStatus("Connected ✅");
 
+        // Start 10-minute timer ONLY after connected
         sessionStartedAtRef.current = Date.now();
         setTimeLeft(600);
 
@@ -559,6 +584,7 @@ export default function ChatPage() {
           }
         }, 1000);
 
+        // Save daily lock date
         try {
           const today = new Date().toISOString().slice(0, 10);
           localStorage.setItem(dailyLockKey, today);
@@ -586,7 +612,10 @@ Ask ONE question at a time and wait for reply.`;
             type: "session.update",
             session: {
               instructions,
-              input_audio_transcription: { model: "gpt-4o-mini-transcribe", language: "en" },
+              input_audio_transcription: {
+                model: "gpt-4o-mini-transcribe",
+                language: "en",
+              },
             },
           })
         );
@@ -598,15 +627,25 @@ Ask ONE question at a time and wait for reply.`;
         try {
           const msg = JSON.parse(ev.data);
 
-          const assistantText = msg?.delta ?? msg?.text ?? msg?.output_text ?? msg?.response?.output_text ?? msg?.content;
-          if (typeof assistantText === "string" && assistantText.trim()) appendTranscript(`AI: ${assistantText}`);
+          const assistantText =
+            msg?.delta ??
+            msg?.text ??
+            msg?.output_text ??
+            msg?.response?.output_text ??
+            msg?.content;
+
+          if (typeof assistantText === "string" && assistantText.trim()) {
+            appendTranscript(`AI: ${assistantText}`);
+          }
 
           const tr =
             msg?.transcript ??
             msg?.input_audio_transcription?.transcript ??
             msg?.conversation?.item?.input_audio_transcription?.transcript;
 
-          if (typeof tr === "string" && tr.trim()) appendTranscript(`STUDENT: ${tr}`);
+          if (typeof tr === "string" && tr.trim()) {
+            appendTranscript(`STUDENT: ${tr}`);
+          }
         } catch {}
       };
 
@@ -621,13 +660,19 @@ Ask ONE question at a time and wait for reply.`;
         setTimeLeft(null);
       };
 
+      // Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+
+      // ✅ FIX #2: wait for ICE gathering (mobile needs this)
+      await waitForIceGatheringComplete(pc);
+
+      const finalSdp = pc.localDescription?.sdp || offer.sdp;
 
       const sdpResp = await fetch("/api/realtime", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sdp: offer.sdp, token }),
+        body: JSON.stringify({ sdp: finalSdp, token }),
       });
 
       const { json, text } = await safeJsonAny(sdpResp);
@@ -830,12 +875,16 @@ Ask ONE question at a time and wait for reply.`;
           </pre>
         ) : null}
 
+        {/* AI Voice */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px dashed #d1d5db" }}>
           <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 8 }}>AI Voice Output</div>
           <audio ref={remoteAudioRef} autoPlay playsInline controls />
-          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>If iPhone is silent, tap the ▶ play button once.</div>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+            If iPhone is silent, tap the ▶ play button once.
+          </div>
         </div>
 
+        {/* Transcript preview */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
           <div style={{ fontWeight: 800, marginBottom: 6 }}>Transcript (preview)</div>
           <pre style={{ whiteSpace: "pre-wrap", overflowX: "auto", fontSize: 13, color: "#374151" }}>
@@ -843,6 +892,7 @@ Ask ONE question at a time and wait for reply.`;
           </pre>
         </div>
 
+        {/* HISTORY + IMPROVEMENT */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900 }}>History (Last {Math.min(history.length, 10)})</div>
@@ -857,15 +907,14 @@ Ask ONE question at a time and wait for reply.`;
                 cursor: history.length === 0 ? "not-allowed" : "pointer",
                 fontWeight: 800,
               }}
+              title="Clear only this student's history"
             >
               Clear History
             </button>
           </div>
 
           {history.length === 0 ? (
-            <div style={{ marginTop: 10, fontSize: 13, color: "#6b7280" }}>
-              No reports yet. Generate a score once and it will save here.
-            </div>
+            <div style={{ marginTop: 10, fontSize: 13, color: "#6b7280" }}>No reports yet. Generate a score once and it will save here.</div>
           ) : (
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
@@ -884,9 +933,11 @@ Ask ONE question at a time and wait for reply.`;
                     {history.map((h) => {
                       const avg = getAvg(h.scores);
                       const avgTxt = avg === null ? "-" : `${avg.toFixed(1)}/5`;
+
                       const delta = getDeltaFor(h);
                       const deltaTxt = delta === null ? "—" : formatDelta(delta);
                       const arrow = delta === null ? "" : delta > 0 ? "▲" : delta < 0 ? "▼" : "•";
+
                       const isSel = h.id === selectedReportId;
 
                       return (
@@ -925,10 +976,82 @@ Ask ONE question at a time and wait for reply.`;
                   </tbody>
                 </table>
               </div>
+
+              {selectedReport ? (
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 900 }}>
+                      Report: {formatDateTime(selectedReport.ts)} — {selectedReport.lesson || ""}
+                    </div>
+                    <div style={{ color: "#6b7280", fontSize: 13 }}>Student: {selectedReport.student}</div>
+                  </div>
+
+                  <div style={{ marginTop: 10, padding: 10, borderRadius: 12, border: "1px dashed #d1d5db" }}>
+                    <b>Improvement vs last time:</b>{" "}
+                    {selectedDelta === null ? (
+                      <span style={{ color: "#6b7280" }}>Not enough reports yet.</span>
+                    ) : (
+                      <span style={{ fontWeight: 900 }}>
+                        {selectedDelta > 0 ? "▲" : selectedDelta < 0 ? "▼" : "•"} {formatDelta(selectedDelta)}
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+                    <ScoreCard title="Pronunciation" value={selectedReport?.scores?.pronunciation} />
+                    <ScoreCard title="Grammar" value={selectedReport?.scores?.grammar} />
+                    <ScoreCard title="Fluency" value={selectedReport?.scores?.fluency} />
+                    <ScoreCard title="Confidence" value={selectedReport?.scores?.confidence} />
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    <b>Strengths:</b>
+                    <ul style={{ marginTop: 6 }}>
+                      {(selectedReport.strengths || []).map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    <b>Improvements:</b>
+                    <ul style={{ marginTop: 6 }}>
+                      {(selectedReport.improvements || []).map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {Array.isArray(selectedReport.corrected_sentences) && selectedReport.corrected_sentences.length ? (
+                    <div style={{ marginTop: 12 }}>
+                      <b>Corrections:</b>
+                      <ul style={{ marginTop: 6 }}>
+                        {selectedReport.corrected_sentences.slice(0, 3).map((c, i) => (
+                          <li key={i}>
+                            <div>
+                              <i>Student said:</i> {c.student_said}
+                            </div>
+                            <div>
+                              <i>Better:</i> {c.better}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {selectedReport.homework ? (
+                    <div style={{ marginTop: 12, padding: 10, borderRadius: 12, border: "1px dashed #d1d5db" }}>
+                      <b>Homework:</b> {selectedReport.homework}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           )}
         </div>
 
+        {/* CURRENT SCORE */}
         <div style={{ marginTop: 16, padding: 14, borderRadius: 14, border: "1px solid #e5e7eb" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ fontWeight: 900 }}>Speaking Score</div>
@@ -952,6 +1075,7 @@ Ask ONE question at a time and wait for reply.`;
         </div>
       </div>
 
+      {/* ✅ MOBILE STICKY START BUTTON */}
       <div
         style={{
           position: "fixed",
