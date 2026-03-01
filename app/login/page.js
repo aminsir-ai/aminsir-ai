@@ -5,12 +5,10 @@ import { useRouter } from "next/navigation";
 
 const AUTH_KEY = "aminsir_auth_v1";
 
-// ✅ Add / edit students here (username: "4-digit PIN")
 const ALLOWED_USERS = {
   ali: "1111",
   rahul: "2222",
   fatima: "3333",
-  // add more...
 };
 
 function normalizeName(s) {
@@ -27,7 +25,6 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    // If already logged in, go to chat
     try {
       const raw = localStorage.getItem(AUTH_KEY);
       if (raw) router.replace("/chat");
@@ -63,18 +60,13 @@ export default function LoginPage() {
 
     try {
       localStorage.setItem(AUTH_KEY, JSON.stringify({ user: u, at: Date.now() }));
-    } catch {
-      // even if storage fails, still try to route (some private modes block storage)
-    }
+    } catch {}
 
-    // small delay so mobile UI shows "Logging in..."
-    setTimeout(() => {
-      router.replace("/chat");
-    }, 150);
+    setTimeout(() => router.replace("/chat"), 150);
   }
 
   function onSubmit(e) {
-    e.preventDefault(); // ✅ prevents refresh
+    e.preventDefault();
     if (busy) return;
     doLogin();
   }
@@ -168,12 +160,6 @@ export default function LoginPage() {
             {error}
           </div>
         ) : null}
-
-        <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
-          <div style={{ fontWeight: 800, marginBottom: 4 }}>How to login:</div>
-          <div>• Username small letters (example: ali)</div>
-          <div>• PIN must be 4 digits</div>
-        </div>
       </form>
     </div>
   );
