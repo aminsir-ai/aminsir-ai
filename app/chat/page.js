@@ -34,20 +34,48 @@ export default function ChatPage() {
       if (p && typeof p.then === "function") await p;
       setAudioUnlocked(true);
       return true;
-    } catch (e) {
+    } catch {
       setAudioUnlocked(false);
       return false;
     }
   }
 
   function sendJSON(obj) {
-    const dc = dcRef.current;
-    if (!dc || dc.readyState !== "open") return;
-    dc.send(JSON.stringify(obj));
+    try {
+      const dc = dcRef.current;
+      if (!dc || dc.readyState !== "open") return;
+      dc.send(JSON.stringify(obj));
+    } catch (e) {
+      console.error("sendJSON failed", e);
+    }
+  }
+
+  async function testPostRealtime() {
+    setError("");
+    setStep("Testing POST /api/realtime …");
+    try {
+      const r = await fetch("/api/realtime", { method: "POST" });
+      const text = await r.text();
+      setStep(`POST done (status ${r.status})`);
+
+      // Try show JSON nicely
+      try {
+        const j = JSON.parse(text);
+        if (!r.ok) throw new Error(JSON.stringify(j, null, 2));
+        if (!j?.value) throw new Error("No value in response:\n" + JSON.stringify(j, null, 2));
+        setStep("POST works ✅ (ephemeral key received)");
+      } catch (e) {
+        // If not JSON
+        if (!r.ok) throw new Error(text);
+        setStep("POST works ✅");
+      }
+    } catch (e) {
+      setErr(e);
+    }
   }
 
   async function getEphemeralKey() {
-    setStep("Fetching ephemeral key…");
+    setStep("Fetching ephemeral key (POST /api/realtime) …");
     const r = await fetch("/api/realtime", { method: "POST" });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data, null, 2));
@@ -75,14 +103,11 @@ export default function ChatPage() {
     const track = stream.getAudioTracks()[0];
     if (!track) throw new Error("No audio track from mic");
 
-    // Add track only once
     const senders = pc.getSenders?.() || [];
     const already = senders.some((s) => s?.track && s.track.kind === "audio");
-    if (!already) {
-      pc.addTrack(track, stream);
-    }
+    if (!already) pc.addTrack(track, stream);
 
-    // Default OFF (PTT will enable)
+    // default off until PTT
     track.enabled = false;
   }
 
@@ -94,7 +119,6 @@ export default function ChatPage() {
     setGotRemoteTrack(false);
 
     try {
-      // Must be user gesture -> unlock audio here
       await unlockAudio();
 
       const EPHEMERAL_KEY = await getEphemeralKey();
@@ -124,7 +148,6 @@ export default function ChatPage() {
         }
       };
 
-      // IMPORTANT: add audio transceiver + mic track BEFORE offer (mobile fix)
       setStep("Adding audio transceiver…");
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
@@ -137,7 +160,7 @@ export default function ChatPage() {
       dc.onopen = () => {
         setDcOpen(true);
 
-        // configure session
+        // session config
         sendJSON({
           type: "session.update",
           session: {
@@ -148,7 +171,7 @@ export default function ChatPage() {
             instructions: `
 You are Amin Sir, a friendly Indian English teacher for school students.
 Speak slow and clear English. Short sentences. One question at a time.
-Encourage after every reply. Wait for student. Do not speak long paragraphs.
+Encourage after every reply. Wait for student reply. Do not speak long paragraphs.
             `.trim(),
             modalities: ["text", "audio"],
           },
@@ -176,15 +199,12 @@ Encourage after every reply. Wait for student. Do not speak long paragraphs.
         });
       };
 
-      // Create offer AFTER mic track exists
       setStep("Creating offer…");
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
       const sdp = offer?.sdp || "";
-      if (!sdp.trim().startsWith("v=")) {
-        throw new Error("Offer SDP invalid/empty on mobile. Mic track not attached properly.");
-      }
+      if (!sdp.trim().startsWith("v=")) throw new Error("Offer SDP invalid/empty");
 
       setStep("Sending SDP to OpenAI…");
       const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
@@ -251,15 +271,13 @@ Encourage after every reply. Wait for student. Do not speak long paragraphs.
     setError("");
     await unlockAudio();
 
-    const stream = localStreamRef.current;
-    const track = stream?.getAudioTracks?.()?.[0];
+    const track = localStreamRef.current?.getAudioTracks?.()?.[0];
     if (track) track.enabled = true;
   }
 
   function pttStop() {
     setPttActive(false);
-    const stream = localStreamRef.current;
-    const track = stream?.getAudioTracks?.()?.[0];
+    const track = localStreamRef.current?.getAudioTracks?.()?.[0];
     if (track) track.enabled = false;
 
     sendJSON({ type: "response.create", response: { max_output_tokens: 120 } });
@@ -291,11 +309,9 @@ Encourage after every reply. Wait for student. Do not speak long paragraphs.
           Status: {status}
         </div>
 
-        <div style={{ fontWeight: 700 }}>
-          Step: {step}
-        </div>
+        <div style={{ fontWeight: 800 }}>Step: {step}</div>
 
-        <div style={{ fontWeight: 700 }}>
+        <div style={{ fontWeight: 800 }}>
           DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound:{" "}
           {audioUnlocked ? "Enabled ✅" : "Locked"}
         </div>
@@ -343,6 +359,19 @@ Encourage after every reply. Wait for student. Do not speak long paragraphs.
         >
           {audioUnlocked ? "Sound Enabled ✅" : "Enable Sound 🔊"}
         </button>
+
+        <button
+          onClick={testPostRealtime}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: "#fff",
+            fontWeight: 900,
+          }}
+        >
+          Test API (POST)
+        </button>
       </div>
 
       {error ? (
@@ -363,7 +392,6 @@ Encourage after every reply. Wait for student. Do not speak long paragraphs.
 
       <audio ref={remoteAudioRef} autoPlay playsInline controls style={{ width: "100%", marginTop: 12 }} />
 
-      {/* Bottom PTT */}
       <div
         style={{
           position: "fixed",
