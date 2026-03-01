@@ -25,7 +25,7 @@ const USAGE_KEY_BASE = "aminsir_daily_usage_v1";
 const VOICE = "onyx"; // male voice
 
 /** ---------------- Feature A: Continuous auto follow-up ---------------- */
-const FOLLOWUP_SILENCE_MS = 12000; // 12 sec after AI finishes
+const FOLLOWUP_SILENCE_MS = 12000; // 12 sec after AI finishes speaking
 const MAX_FOLLOWUPS_PER_SESSION = 6;
 const FOLLOWUP_COOLDOWN_MS = 15000;
 
@@ -187,6 +187,9 @@ export default function ChatPage() {
   const lastFollowupAtRef = useRef(0);
   const studentSpeakingRef = useRef(false);
 
+  // To prevent follow-up scheduling multiple times for the same AI turn
+  const lastAiFinishedAtRef = useRef(0);
+
   // Feature C refs
   const sessionStartRef = useRef(null);
   const sessionTimerRef = useRef(null);
@@ -293,7 +296,7 @@ export default function ChatPage() {
     return true;
   }
 
-  function scheduleFollowup(reason = "after_ai_done") {
+  function scheduleFollowup(reason = "ai_finished_speaking") {
     clearFollowupTimer();
     if (!canSendFollowup()) return;
 
@@ -321,6 +324,14 @@ End with: "Your turn—answer in 1 line."`,
 
       sendJSON({ type: "response.create", response: { modalities: ["audio"], max_output_tokens: 140 } });
     }, FOLLOWUP_SILENCE_MS);
+  }
+
+  function markAiFinishedAndSchedule(reason) {
+    const now = Date.now();
+    // avoid double scheduling from multiple end events
+    if (now - lastAiFinishedAtRef.current < 800) return;
+    lastAiFinishedAtRef.current = now;
+    scheduleFollowup(reason);
   }
 
   /** -------- Feature C helpers -------- */
@@ -468,9 +479,14 @@ End with: "Your turn—answer in 1 line."`,
         studentSpeakingRef.current = false;
       }
 
-      // When AI completes a response, start follow-up timer
-      if (msg?.type === "response.done" || msg?.type === "response.completed") {
-        scheduleFollowup("after_ai_done");
+      // ✅ FIX: trigger follow-up timer when AI FINISHES SPEAKING (audio)
+      if (
+        msg?.type === "output_audio_buffer.stopped" ||
+        msg?.type === "response.audio.done" ||
+        msg?.type === "response.done" ||
+        msg?.type === "response.completed"
+      ) {
+        markAiFinishedAndSchedule("ai_finished_speaking");
       }
 
       // Score report capture (text)
@@ -549,6 +565,7 @@ Always respond in AUDIO.
     followupCountRef.current = 0;
     lastFollowupAtRef.current = 0;
     studentSpeakingRef.current = false;
+    lastAiFinishedAtRef.current = 0;
     clearFollowupTimer();
 
     // Reset daily limit
@@ -636,7 +653,7 @@ Always respond in AUDIO.
                 {
                   type: "input_text",
                   text: `Say in AUDIO at normal teacher speed (not slow):
-"Hello ${user}! I am Amin Sir. We will practice English speaking. Level is ${levelToText(level)}.
+"Hello ${user}! Welcome beta. I am Amin Sir. Level is ${levelToText(level)}.
 Ready? Tell me one sentence about your day."`,
                 },
               ],
@@ -681,7 +698,6 @@ Ready? Tell me one sentence about your day."`,
       setStatus("Error");
       setErr(e);
     } finally {
-      // unlock only if not connected
       if (!connectedRef.current) startLockRef.current = false;
     }
   }
@@ -889,10 +905,7 @@ Keep it short.
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ fontWeight: 900 }}>User: {user}</div>
-          <button
-            onClick={logout}
-            style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}
-          >
+          <button onClick={logout} style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}>
             Logout
           </button>
         </div>
@@ -900,11 +913,7 @@ Keep it short.
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontWeight: 900 }}>Level:</div>
-        <select
-          value={level}
-          onChange={(e) => persistLevel(e.target.value)}
-          style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 800 }}
-        >
+        <select value={level} onChange={(e) => persistLevel(e.target.value)} style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 800 }}>
           <option value="beginner">Beginner</option>
           <option value="medium">Medium</option>
           <option value="advanced">Advanced</option>
@@ -915,36 +924,21 @@ Keep it short.
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Status: {status}</div>
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Step: {step}</div>
       <div style={{ fontWeight: 800, marginBottom: 12 }}>
-        DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound:{" "}
-        {soundEnabled ? "Enabled ✅" : "Locked"} | Mic: {micOn ? "On ✅" : "Off"}
+        DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound: {soundEnabled ? "Enabled ✅" : "Locked"} | Mic: {micOn ? "On ✅" : "Off"}
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <button
           onClick={startVoice}
           disabled={startLockRef.current && !connected}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "none",
-            background: "#111",
-            color: "#fff",
-            fontWeight: 900,
-            opacity: startLockRef.current && !connected ? 0.6 : 1,
-          }}
+          style={{ padding: "10px 14px", borderRadius: 12, border: "none", background: "#111", color: "#fff", fontWeight: 900, opacity: startLockRef.current && !connected ? 0.6 : 1 }}
         >
           Start Voice 🎤
         </button>
 
         <button
           onClick={enableSoundStrong}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "1px solid #ddd",
-            background: soundEnabled ? "#eaffea" : "#fff",
-            fontWeight: 900,
-          }}
+          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: soundEnabled ? "#eaffea" : "#fff", fontWeight: 900 }}
         >
           Enable Sound 🔊 {soundEnabled ? "✅" : ""}
         </button>
@@ -952,31 +946,14 @@ Keep it short.
         <button
           onClick={stopWithReport}
           disabled={!connected || reportLoading}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "1px solid #ddd",
-            background: !connected || reportLoading ? "#f3f4f6" : "#fff",
-            fontWeight: 900,
-            opacity: !connected || reportLoading ? 0.6 : 1,
-          }}
+          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: !connected || reportLoading ? "#f3f4f6" : "#fff", fontWeight: 900, opacity: !connected || reportLoading ? 0.6 : 1 }}
         >
           Stop ⛔ (Score Card)
         </button>
       </div>
 
       {error ? (
-        <pre
-          style={{
-            marginTop: 12,
-            padding: 12,
-            borderRadius: 12,
-            background: "#fff1f2",
-            border: "1px solid #fecdd3",
-            color: "#7f1d1d",
-            whiteSpace: "pre-wrap",
-          }}
-        >
+        <pre style={{ marginTop: 12, padding: 12, borderRadius: 12, background: "#fff1f2", border: "1px solid #fecdd3", color: "#7f1d1d", whiteSpace: "pre-wrap" }}>
           {error}
         </pre>
       ) : null}
@@ -1038,15 +1015,7 @@ Keep it short.
                 <div key={d.date} style={{ textAlign: "center" }}>
                   <div
                     title={s === null ? `${d.date}: no practice` : `${d.date}: ${s}/10`}
-                    style={{
-                      height: 74,
-                      border: "1px solid #eee",
-                      borderRadius: 10,
-                      display: "flex",
-                      alignItems: "flex-end",
-                      justifyContent: "center",
-                      padding: 6,
-                    }}
+                    style={{ height: 74, border: "1px solid #eee", borderRadius: 10, display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 6 }}
                   >
                     <div style={{ width: "100%", height: h, borderRadius: 8, background: s === null ? "#ddd" : "#111" }} />
                   </div>
