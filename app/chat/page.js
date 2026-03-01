@@ -110,14 +110,13 @@ export default function ChatPage() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // ✅ IMPORTANT FIX: add openai-beta header here too
+      // ✅ IMPORTANT: NO openai-beta header here
       const sdpResponse = await fetch("https://api.openai.com/v1/realtime?model=gpt-realtime", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${EPHEMERAL_KEY}`,
           "Content-Type": "application/sdp",
           Accept: "application/sdp",
-          "openai-beta": "realtime=v1",
         },
         body: offer.sdp,
       });
@@ -151,15 +150,11 @@ export default function ChatPage() {
       stopTalking(true);
 
       if (dcRef.current) {
-        try {
-          dcRef.current.close();
-        } catch {}
+        try { dcRef.current.close(); } catch {}
         dcRef.current = null;
       }
       if (pcRef.current) {
-        try {
-          pcRef.current.close();
-        } catch {}
+        try { pcRef.current.close(); } catch {}
         pcRef.current = null;
       }
 
@@ -196,9 +191,7 @@ export default function ChatPage() {
       if (!localStreamRef.current) return;
       localStreamRef.current.getTracks().forEach((t) => {
         if (fullStop) {
-          try {
-            t.stop();
-          } catch {}
+          try { t.stop(); } catch {}
         } else {
           t.enabled = false;
         }
@@ -231,9 +224,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     return () => {
-      try {
-        disconnectRealtime();
-      } catch {}
+      try { disconnectRealtime(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -356,25 +347,11 @@ export default function ChatPage() {
         </button>
 
         <button
-          onTouchStart={(e) => {
-            e.preventDefault();
-            if (tutorMode) pttStart();
-          }}
-          onTouchEnd={(e) => {
-            e.preventDefault();
-            if (tutorMode) pttStop();
-          }}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            if (tutorMode) pttStart();
-          }}
-          onMouseUp={(e) => {
-            e.preventDefault();
-            if (tutorMode) pttStop();
-          }}
-          onMouseLeave={() => {
-            if (tutorMode && pttActive) pttStop();
-          }}
+          onTouchStart={(e) => { e.preventDefault(); if (tutorMode) pttStart(); }}
+          onTouchEnd={(e) => { e.preventDefault(); if (tutorMode) pttStop(); }}
+          onMouseDown={(e) => { e.preventDefault(); if (tutorMode) pttStart(); }}
+          onMouseUp={(e) => { e.preventDefault(); if (tutorMode) pttStop(); }}
+          onMouseLeave={() => { if (tutorMode && pttActive) pttStop(); }}
           disabled={!connected || !tutorMode}
           style={{
             flex: 1,
@@ -392,11 +369,7 @@ export default function ChatPage() {
         </button>
 
         <button
-          onClick={() => {
-            try {
-              if (pttActive) pttStop();
-            } catch {}
-          }}
+          onClick={() => { try { if (pttActive) pttStop(); } catch {} }}
           style={{
             padding: "10px 12px",
             borderRadius: 12,

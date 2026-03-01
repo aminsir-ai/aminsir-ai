@@ -8,7 +8,7 @@ function json(data, status = 200) {
   });
 }
 
-// POST /api/realtime  -> returns { value: <EPHEMERAL_KEY> }
+// POST /api/realtime -> returns { value: <EPHEMERAL_KEY> }
 export async function POST() {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
@@ -19,8 +19,7 @@ export async function POST() {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        // ✅ IMPORTANT FIX:
-        "openai-beta": "realtime=v1",
+        // ✅ IMPORTANT: DO NOT send openai-beta header for GA
       },
       body: JSON.stringify({
         session: {
