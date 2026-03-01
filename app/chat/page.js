@@ -25,7 +25,8 @@ const USAGE_KEY_BASE = "aminsir_daily_usage_v1";
 const VOICE = "onyx"; // male voice
 
 /** ---------------- Feature A: Continuous auto follow-up ---------------- */
-const FOLLOWUP_SILENCE_MS = 12000; // 12 sec after AI finishes speaking
+// ✅ TEMP TEST: 6 seconds (easy to confirm). Later we will set back to 12 seconds.
+const FOLLOWUP_SILENCE_MS = 6000; // 6 sec after AI finishes speaking
 const MAX_FOLLOWUPS_PER_SESSION = 6;
 const FOLLOWUP_COOLDOWN_MS = 15000;
 
@@ -187,7 +188,7 @@ export default function ChatPage() {
   const lastFollowupAtRef = useRef(0);
   const studentSpeakingRef = useRef(false);
 
-  // To prevent follow-up scheduling multiple times for the same AI turn
+  // prevent double schedule from multiple audio-end events
   const lastAiFinishedAtRef = useRef(0);
 
   // Feature C refs
@@ -328,8 +329,7 @@ End with: "Your turn—answer in 1 line."`,
 
   function markAiFinishedAndSchedule(reason) {
     const now = Date.now();
-    // avoid double scheduling from multiple end events
-    if (now - lastAiFinishedAtRef.current < 800) return;
+    if (now - lastAiFinishedAtRef.current < 800) return; // prevent double schedule
     lastAiFinishedAtRef.current = now;
     scheduleFollowup(reason);
   }
@@ -470,7 +470,7 @@ End with: "Your turn—answer in 1 line."`,
         return;
       }
 
-      // Student speaking detection (prevents follow-up)
+      // Student speaking detection
       if (msg?.type === "input_audio_buffer.speech_started") {
         studentSpeakingRef.current = true;
         clearFollowupTimer();
@@ -479,7 +479,7 @@ End with: "Your turn—answer in 1 line."`,
         studentSpeakingRef.current = false;
       }
 
-      // ✅ FIX: trigger follow-up timer when AI FINISHES SPEAKING (audio)
+      // ✅ Auto follow-up trigger when AI finishes speaking
       if (
         msg?.type === "output_audio_buffer.stopped" ||
         msg?.type === "response.audio.done" ||
@@ -489,7 +489,7 @@ End with: "Your turn—answer in 1 line."`,
         markAiFinishedAndSchedule("ai_finished_speaking");
       }
 
-      // Score report capture (text)
+      // Report capture
       if (stoppingRef.current) {
         const t = extractAnyText(msg);
         if (t) reportTextRef.current += t;
@@ -561,17 +561,17 @@ Always respond in AUDIO.
 
     greetedRef.current = false;
 
-    // Reset feature A
+    // reset follow-up
     followupCountRef.current = 0;
     lastFollowupAtRef.current = 0;
     studentSpeakingRef.current = false;
     lastAiFinishedAtRef.current = 0;
     clearFollowupTimer();
 
-    // Reset daily limit
+    // reset limit
     limitTriggeredRef.current = false;
 
-    // Load today's usage
+    // load usage
     usedTodayRef.current = getTodayUsage();
     if (usedTodayRef.current >= DAILY_LIMIT_MINUTES) {
       setStatus("Daily limit reached");
@@ -640,7 +640,6 @@ Always respond in AUDIO.
           },
         });
 
-        // greet only once
         if (!greetedRef.current) {
           greetedRef.current = true;
 
@@ -1026,7 +1025,7 @@ Keep it short.
           </div>
 
           <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-            ✅ Auto follow-up ON • 🔐 Daily limit ON • 👤 Per-user progress saved (Supabase students table login)
+            ✅ Auto follow-up TEST (6s) • 🔐 Daily limit ON • 👤 Per-user progress saved (Supabase students table login)
           </div>
         </div>
       </div>
