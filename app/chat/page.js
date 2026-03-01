@@ -2,55 +2,74 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const FOLLOWUP_SILENCE_MS = 12000; // 12 sec after AI finished
-const MAX_FOLLOWUPS_PER_SESSION = 6;
-const FOLLOWUP_COOLDOWN_MS = 15000;
+const LS_KEY = "aminsir_progress_v5";
+const VOICE = "onyx"; // male voice
 
-function todayKey() {
+function todayKeyLocal() {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate()
-  ).padStart(2, "0")}`;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function loadProgress() {
   try {
-    return JSON.parse(localStorage.getItem("amin_progress_v1") || "{}");
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return { streak: 0, lastDay: null, history: [], level: "beginner" };
+    const parsed = JSON.parse(raw);
+    return {
+      streak: Number(parsed?.streak || 0),
+      lastDay: parsed?.lastDay || null,
+      history: Array.isArray(parsed?.history) ? parsed.history : [],
+      level: parsed?.level || "beginner",
+    };
   } catch {
-    return {};
+    return { streak: 0, lastDay: null, history: [], level: "beginner" };
   }
 }
 
 function saveProgress(p) {
-  localStorage.setItem("amin_progress_v1", JSON.stringify(p));
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(p));
+  } catch {}
 }
 
-function getLast7Days(progress) {
-  const out = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-      d.getDate()
-    ).padStart(2, "0")}`;
-    out.push({ date: k, score: progress?.[k]?.score || 0, minutes: progress?.[k]?.minutes || 0 });
-  }
-  return out;
+function computeNewStreak(prevLastDay, prevStreak) {
+  const today = todayKeyLocal();
+  if (!prevLastDay) return { streak: 1, lastDay: today };
+  if (prevLastDay === today) return { streak: prevStreak || 1, lastDay: today };
+
+  const prev = new Date(prevLastDay + "T00:00:00");
+  const now = new Date(today + "T00:00:00");
+  const diffDays = Math.round((now - prev) / (24 * 60 * 60 * 1000));
+  if (diffDays === 1) return { streak: (prevStreak || 0) + 1, lastDay: today };
+  return { streak: 1, lastDay: today };
 }
 
-function calcStreak(progress) {
-  let streak = 0;
-  for (let i = 0; i < 365; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-      d.getDate()
-    ).padStart(2, "0")}`;
-    const has = (progress?.[k]?.minutes || 0) > 0;
-    if (!has) break;
-    streak++;
-  }
-  return streak;
+function clampScore(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(10, Math.round(n)));
+}
+
+function scoreLabel(score) {
+  if (score >= 9) return "Excellent!";
+  if (score >= 7) return "Very Good!";
+  if (score >= 5) return "Good Start!";
+  return "Keep Practicing!";
+}
+
+function levelToText(level) {
+  if (level === "advanced") return "Advanced";
+  if (level === "medium") return "Medium";
+  return "Beginner";
+}
+
+function levelProfile(level) {
+  if (level === "advanced") return { vocab: "moderate to high", questions: "opinion + story + reasons", correction: "more strict" };
+  if (level === "medium") return { vocab: "simple to moderate", questions: "mix easy + open ended", correction: "balanced" };
+  return { vocab: "very simple", questions: "very easy daily-life", correction: "gentle" };
 }
 
 export default function ChatPage() {
@@ -59,46 +78,89 @@ export default function ChatPage() {
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
 
-  const followupTimerRef = useRef(null);
-  const followupCountRef = useRef(0);
-  const lastFollowupAtRef = useRef(0);
+  // Mobile audio fallback
+  const audioCtxRef = useRef(null);
+  const audioSrcRef = useRef(null);
+  const remoteStreamRef = useRef(null);
 
+  // ✅ prevents double start + prevents repeated greeting
+  const startLockRef = useRef(false);
   const greetedRef = useRef(false);
-  const studentSpeakingRef = useRef(false);
-  const sessionActiveRef = useRef(false);
 
-  const [level, setLevel] = useState("Beginner");
+  // Report capture
+  const stoppingRef = useRef(false);
+  const reportTextRef = useRef("");
+  const reportResolveRef = useRef(null);
+  const reportTimeoutRef = useRef(null);
+
   const [status, setStatus] = useState("Idle");
+  const [step, setStep] = useState("—");
   const [error, setError] = useState("");
-  const [connected, setConnected] = useState(false);
 
+  const [dcOpen, setDcOpen] = useState(false);
+  const [gotRemoteTrack, setGotRemoteTrack] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
-  const [showScoreCard, setShowScoreCard] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [micOn, setMicOn] = useState(false);
 
-  const [progress, setProgress] = useState(() => (typeof window !== "undefined" ? loadProgress() : {}));
-  const streak = useMemo(() => calcStreak(progress), [progress]);
-  const last7 = useMemo(() => getLast7Days(progress), [progress]);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [scoreCard, setScoreCard] = useState(null);
+  const [streak, setStreak] = useState(0);
+  const [history, setHistory] = useState([]);
+  const [level, setLevel] = useState("beginner");
 
-  // --- Helpers ---
-  function logStatus(s) {
-    setStatus(s);
+  useEffect(() => {
+    const p = loadProgress();
+    setStreak(p.streak || 0);
+    setHistory(p.history || []);
+    setLevel(p.level || "beginner");
+  }, []);
+
+  function persistLevel(newLevel) {
+    setLevel(newLevel);
+    const prev = loadProgress();
+    saveProgress({ ...prev, level: newLevel });
   }
 
-  function clearFollowupTimer() {
-    if (followupTimerRef.current) {
-      clearTimeout(followupTimerRef.current);
-      followupTimerRef.current = null;
+  function setErr(e) {
+    const msg = typeof e === "string" ? e : e?.message || JSON.stringify(e, null, 2);
+    console.error(e);
+    setError(msg);
+  }
+
+  async function enableSoundStrong() {
+    setError("");
+    try {
+      const el = remoteAudioRef.current;
+      if (el) {
+        el.muted = false;
+        el.volume = 1;
+        el.playsInline = true;
+        const p = el.play?.();
+        if (p && typeof p.then === "function") await p;
+      }
+
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        if (!audioCtxRef.current) audioCtxRef.current = new AC();
+        if (audioCtxRef.current.state === "suspended") await audioCtxRef.current.resume();
+
+        if (remoteStreamRef.current) {
+          try {
+            if (audioSrcRef.current) audioSrcRef.current.disconnect();
+          } catch {}
+          try {
+            audioSrcRef.current = audioCtxRef.current.createMediaStreamSource(remoteStreamRef.current);
+            audioSrcRef.current.connect(audioCtxRef.current.destination);
+          } catch {}
+        }
+      }
+
+      setSoundEnabled(true);
+    } catch (e) {
+      setSoundEnabled(false);
+      setErr(e);
     }
-  }
-
-  function canSendFollowup() {
-    const now = Date.now();
-    if (!sessionActiveRef.current) return false;
-    if (!connected) return false;
-    if (followupCountRef.current >= MAX_FOLLOWUPS_PER_SESSION) return false;
-    if (studentSpeakingRef.current) return false;
-    if (now - lastFollowupAtRef.current < FOLLOWUP_COOLDOWN_MS) return false;
-    return true;
   }
 
   function sendJSON(obj) {
@@ -107,106 +169,337 @@ export default function ChatPage() {
     dc.send(JSON.stringify(obj));
   }
 
-  async function getEphemeralToken() {
+  async function getEphemeralKey() {
+    setStep("Fetching key…");
     const r = await fetch("/api/realtime", { method: "POST" });
-    const data = await r.json();
-    if (!r.ok) throw new Error(JSON.stringify(data, null, 2));
-    if (!data?.value) throw new Error("Token missing: " + JSON.stringify(data, null, 2));
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data, null, 2));
+    if (!data?.value) throw new Error("Ephemeral key missing from response");
     return data.value;
   }
 
-  async function enableSound() {
-    try {
-      // Mobile unlock: play a tiny silent audio once user taps
-      const a = new Audio();
-      a.src =
-        "data:audio/mp3;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCA" +
-        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-      a.volume = 0.001;
-      await a.play().catch(() => {});
-      setSoundEnabled(true);
-      setError("");
-    } catch (e) {
-      setError("Enable Sound failed. Try again.");
-    }
+  async function ensureMicTrack(pc) {
+    setStep("Requesting microphone…");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    });
+    localStreamRef.current = stream;
+
+    const track = stream.getAudioTracks()[0];
+    if (!track) throw new Error("No microphone track");
+
+    const already = pc.getSenders().some((s) => s.track && s.track.kind === "audio");
+    if (!already) pc.addTrack(track, stream);
+
+    track.enabled = true;
+    setMicOn(true);
   }
 
-  function buildSystemPrompt() {
-    // Hinglish rule + teacher tone + follow-up friendly
+  function extractAnyText(msg) {
+    const candidates = [
+      msg?.delta,
+      msg?.text?.delta,
+      msg?.output_text?.delta,
+      msg?.response?.output_text?.delta,
+      msg?.response?.text?.delta,
+    ];
+    for (const c of candidates) if (typeof c === "string" && c.length) return c;
+
+    const direct = [msg?.text, msg?.output_text, msg?.response?.output_text, msg?.response?.text];
+    for (const d of direct) if (typeof d === "string" && d.length) return d;
+
+    const output = msg?.response?.output;
+    if (Array.isArray(output)) {
+      let outText = "";
+      for (const item of output) {
+        const content = item?.content;
+        if (Array.isArray(content)) {
+          for (const part of content) {
+            if (typeof part?.text === "string") outText += part.text;
+            if (typeof part?.transcript === "string") outText += part.transcript;
+          }
+        }
+      }
+      if (outText.trim()) return outText;
+    }
+    return "";
+  }
+
+  function attachDcMessageHandler(dc) {
+    dc.onmessage = (ev) => {
+      let msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+
+      if (stoppingRef.current) {
+        const t = extractAnyText(msg);
+        if (t) reportTextRef.current += t;
+
+        if (msg?.type === "response.completed" || msg?.type === "response.done") {
+          if (typeof reportResolveRef.current === "function") {
+            reportResolveRef.current();
+            reportResolveRef.current = null;
+          }
+        }
+      }
+    };
+  }
+
+  // ✅ Normal teacher speed (NOT slow motion) + Hinglish rule + anti-repeat rule
+  function buildTutorInstructions(selectedLevel) {
+    const prof = levelProfile(selectedLevel);
+
     return `
-You are "Amin Sir AI Voice Tutor" for Indian school students (Class 4–10).
-Voice: male "onyx". Speak at normal teacher speed.
+You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
 
-Language rule:
-- 80% English + 20% very simple Hindi (Hinglish).
-- Use easy words for weak students.
+SPEED:
+• Speak at normal TEACHER speed (not fast, not slow motion).
+• Use short sentences. 1–2 sentences per turn.
 
-Session rules:
-- Greet only ONCE per session. After greeting, do not greet again.
-- Always be interactive: ask 1 short question at the end of each answer.
-- If the student is silent, gently prompt them, give a small hint, and ask again.
+LANGUAGE MIX (MUST):
+• 80% English + 20% very simple Hindi (Hinglish).
+• Hindi only for quick help/explanation. Keep Hindi very simple.
 
-Level: ${level}
-- Beginner: very simple sentences, more examples, more Hindi support (still keep 80/20).
-- Medium: normal school level, 1–2 examples.
-- Advanced: more fluent, challenge with better vocabulary, still friendly.
+ANTI-REPEAT (VERY IMPORTANT):
+• Never repeat the same greeting again.
+• Greet only once per session.
+• Do not say "Hello beta I am Amin Sir" again after the first greeting.
+• If you already greeted, immediately ask a NEW question.
 
-Teaching style:
-- Correct mistakes politely.
-- Keep answers short.
-- Always end with: "Your turn—answer in 1 line." (or similar).
+LEVEL: ${levelToText(selectedLevel)}
+• Vocabulary: ${prof.vocab}
+• Questions: ${prof.questions}
+• Correction: ${prof.correction}
+
+Conversation:
+• One question at a time.
+• Keep student talking (ask follow-up).
+• Do NOT give scores during conversation.
+Always respond in AUDIO.
 `.trim();
   }
 
-  function sendSessionUpdate() {
-    // Important: this keeps your “working voice” stable while improving behavior
-    sendJSON({
-      type: "session.update",
-      session: {
-        voice: "onyx",
-        instructions: buildSystemPrompt(),
-        // If your build already uses turn_detection successfully, keep it.
-        // This is the common setup for smooth conversational turns:
-        turn_detection: { type: "server_vad" },
-        input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
-      },
-    });
-  }
+  async function startVoice() {
+    // ✅ lock: prevent double start
+    if (startLockRef.current) return;
+    startLockRef.current = true;
 
-  function sendGreetingOnce() {
-    if (greetedRef.current) return;
-    greetedRef.current = true;
+    setError("");
+    setScoreCard(null);
+    setReportLoading(false);
 
-    sendJSON({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text:
-              "Start the session with ONE short greeting (1 line) and ask the student what they want to practice today (1 short question). Remember: Hinglish 80/20.",
+    setStatus("Connecting…");
+    setStep("Starting…");
+    setDcOpen(false);
+    setGotRemoteTrack(false);
+    setConnected(false);
+
+    greetedRef.current = false; // reset greeting flag for new session
+
+    try {
+      const key = await getEphemeralKey();
+
+      setStep("Creating peer…");
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+      pcRef.current = pc;
+
+      pc.onconnectionstatechange = () => {
+        setStatus(`PC: ${pc.connectionState}`);
+        setConnected(pc.connectionState === "connected");
+      };
+
+      pc.ontrack = (e) => {
+        setGotRemoteTrack(true);
+        const stream = e.streams?.[0];
+        if (stream) remoteStreamRef.current = stream;
+
+        const el = remoteAudioRef.current;
+        if (el && stream) el.srcObject = stream;
+
+        if (soundEnabled) enableSoundStrong();
+      };
+
+      setStep("Adding transceiver…");
+      pc.addTransceiver("audio", { direction: "sendrecv" });
+
+      await ensureMicTrack(pc);
+
+      setStep("Creating DataChannel…");
+      const dc = pc.createDataChannel("oai-events");
+      dcRef.current = dc;
+      attachDcMessageHandler(dc);
+
+      dc.onopen = async () => {
+        setDcOpen(true);
+
+        sendJSON({
+          type: "session.update",
+          session: {
+            modalities: ["audio", "text"],
+            voice: VOICE,
+            output_audio_format: "pcm16",
+            audio: { output: { voice: VOICE, format: "pcm16" } },
+            turn_detection: { type: "server_vad" },
+            instructions: buildTutorInstructions(level),
           },
-        ],
-      },
-    });
+        });
 
-    sendJSON({ type: "response.create" });
+        // ✅ greet only once
+        if (!greetedRef.current) {
+          greetedRef.current = true;
+
+          sendJSON({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: `Say in AUDIO at normal teacher speed (not slow):
+"Hello beta! I am Amin Sir. We will practice English speaking. Level is ${levelToText(level)}.
+Aapka naam kya hai? What is your name?"`,
+                },
+              ],
+            },
+          });
+
+          sendJSON({
+            type: "response.create",
+            response: { modalities: ["audio"], max_output_tokens: 170 },
+          });
+        }
+      };
+
+      setStep("Creating offer…");
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const sdp = offer?.sdp || "";
+      if (!sdp.trim().startsWith("v=")) throw new Error("Offer SDP empty/invalid");
+
+      setStep("Sending SDP…");
+      const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/sdp",
+          Accept: "application/sdp",
+        },
+        body: sdp,
+      });
+
+      const answer = await sdpResponse.text().catch(() => "");
+      if (!sdpResponse.ok) throw new Error(answer || `SDP exchange failed (${sdpResponse.status})`);
+      if (!answer.trim().startsWith("v=")) throw new Error("Invalid answer SDP:\n" + answer.slice(0, 400));
+
+      setStep("Applying answer…");
+      await pc.setRemoteDescription({ type: "answer", sdp: answer });
+
+      setStep("Connected ✅ (Tap Enable Sound once)");
+      setStatus("Connected ✅");
+      setConnected(true);
+    } catch (e) {
+      setStatus("Error");
+      setErr(e);
+    } finally {
+      // allow start again only when session is closed by user
+      // keep lock if connected; unlock if failed
+      if (!connected) startLockRef.current = false;
+    }
   }
 
-  function scheduleAutoFollowup(reason = "silent_after_ai") {
-    clearFollowupTimer();
+  function stopAllImmediate() {
+    setStep("Closing…");
+    setStatus("Closing…");
 
-    if (!canSendFollowup()) return;
+    try {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+        localStreamRef.current = null;
+      }
 
-    followupTimerRef.current = setTimeout(() => {
-      if (!canSendFollowup()) return;
+      if (dcRef.current) {
+        try {
+          dcRef.current.close();
+        } catch {}
+        dcRef.current = null;
+      }
 
-      followupCountRef.current += 1;
-      lastFollowupAtRef.current = Date.now();
+      if (pcRef.current) {
+        try {
+          pcRef.current.ontrack = null;
+          pcRef.current.onconnectionstatechange = null;
+          pcRef.current.close();
+        } catch {}
+        pcRef.current = null;
+      }
 
-      // “Coach instruction” — model generates a short follow-up question/hint
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.pause?.();
+        remoteAudioRef.current.srcObject = null;
+      }
+
+      try {
+        if (audioSrcRef.current) {
+          audioSrcRef.current.disconnect();
+          audioSrcRef.current = null;
+        }
+      } catch {}
+    } catch {}
+
+    greetedRef.current = false;
+    startLockRef.current = false; // ✅ unlock start now
+
+    setDcOpen(false);
+    setGotRemoteTrack(false);
+    setConnected(false);
+    setMicOn(false);
+    setStatus("Closed");
+    setStep("—");
+  }
+
+  async function stopWithReport() {
+    setError("");
+    setReportLoading(true);
+    setScoreCard(null);
+
+    setStep("Stopping & generating score…");
+    setStatus("Evaluating…");
+
+    try {
+      const track = localStreamRef.current?.getAudioTracks?.()?.[0];
+      if (track) track.enabled = false;
+      setMicOn(false);
+    } catch {}
+
+    stoppingRef.current = true;
+    reportTextRef.current = "";
+
+    try {
+      const donePromise = new Promise((resolve) => {
+        reportResolveRef.current = resolve;
+      });
+
+      reportTimeoutRef.current = setTimeout(() => {
+        if (typeof reportResolveRef.current === "function") {
+          reportResolveRef.current();
+          reportResolveRef.current = null;
+        }
+      }, 9000);
+
+      const prof = levelProfile(level);
+
       sendJSON({
         type: "conversation.item.create",
         item: {
@@ -215,292 +508,265 @@ Teaching style:
           content: [
             {
               type: "input_text",
-              text: `Student is silent. Give a gentle follow-up prompt (1–2 lines), a tiny hint if needed, and ask the SAME question again.
-Level=${level}. Hinglish 80/20. Keep it motivating. Reason=${reason}.`,
+              text: `
+Give FINAL evaluation for today.
+
+Return STRICT JSON only (no extra text), exactly:
+{
+  "score": 0-10,
+  "grammar": "one correction (80% English + 20% simple Hindi)",
+  "tip": "one tip (80% English + 20% simple Hindi)",
+  "summary": "one encouraging line (80% English + 20% simple Hindi)",
+  "level": "${levelToText(level)}"
+}
+
+Student level: ${levelToText(level)}
+Vocabulary: ${prof.vocab}
+Keep it short.
+              `.trim(),
             },
           ],
         },
       });
 
-      sendJSON({ type: "response.create" });
-    }, FOLLOWUP_SILENCE_MS);
-  }
-
-  // --- Realtime event handler ---
-  function handleRealtimeEvent(msg) {
-    // We only parse JSON messages from dc
-    if (!msg?.type) return;
-
-    // Student speech events (server_vad)
-    if (msg.type === "input_audio_buffer.speech_started") {
-      studentSpeakingRef.current = true;
-      clearFollowupTimer();
-    }
-
-    if (msg.type === "input_audio_buffer.speech_stopped") {
-      studentSpeakingRef.current = false;
-      // we don't follow-up immediately here; we wait until AI finishes its response
-    }
-
-    // When the assistant response completes, start silence timer
-    if (msg.type === "response.done") {
-      // After AI finishes, if student stays silent → nudge
-      scheduleAutoFollowup("silent_after_ai_done");
-    }
-
-    // Optional: if you receive an error, show it
-    if (msg.type === "error") {
-      setError(msg?.error?.message || "Realtime error");
-    }
-  }
-
-  // --- Start/Stop ---
-  async function startVoice() {
-    try {
-      setShowScoreCard(false);
-      setError("");
-      logStatus("Starting…");
-
-      if (!soundEnabled) {
-        setError("Tap Enable Sound first.");
-        return;
-      }
-
-      // reset session trackers
-      greetedRef.current = false;
-      followupCountRef.current = 0;
-      lastFollowupAtRef.current = 0;
-      studentSpeakingRef.current = false;
-      sessionActiveRef.current = true;
-
-      const token = await getEphemeralToken();
-
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
-      pcRef.current = pc;
-
-      // remote audio
-      const remoteAudio = new Audio();
-      remoteAudio.autoplay = true;
-      remoteAudio.playsInline = true;
-      remoteAudioRef.current = remoteAudio;
-
-      pc.ontrack = (e) => {
-        const [stream] = e.streams;
-        remoteAudio.srcObject = stream;
-      };
-
-      // local mic
-      const local = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStreamRef.current = local;
-      local.getTracks().forEach((t) => pc.addTrack(t, local));
-
-      // data channel
-      const dc = pc.createDataChannel("oai-events");
-      dcRef.current = dc;
-
-      dc.onopen = () => {
-        setConnected(true);
-        logStatus("Connected ✅");
-        setError("");
-
-        sendSessionUpdate();
-        sendGreetingOnce();
-      };
-
-      dc.onclose = () => {
-        setConnected(false);
-        logStatus("Disconnected");
-      };
-
-      dc.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data);
-          handleRealtimeEvent(msg);
-        } catch {
-          // ignore non-json
-        }
-      };
-
-      // WebRTC offer/answer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      const sdpResp = await fetch("https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/sdp",
-        },
-        body: offer.sdp,
+      sendJSON({
+        type: "response.create",
+        response: { modalities: ["text"], max_output_tokens: 260 },
       });
 
-      const answerSdp = await sdpResp.text();
-      if (!sdpResp.ok) {
-        throw new Error(`Realtime SDP error: ${answerSdp}`);
-      }
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      await donePromise;
 
-      // Track minutes in local progress (simple)
-      const k = todayKey();
-      const p = { ...progress };
-      p[k] = p[k] || { minutes: 0, score: 0 };
-      saveProgress(p);
-      setProgress(p);
+      if (reportTimeoutRef.current) {
+        clearTimeout(reportTimeoutRef.current);
+        reportTimeoutRef.current = null;
+      }
+
+      const raw = (reportTextRef.current || "").trim();
+      let parsed = null;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = null;
+      }
+
+      const score = clampScore(parsed?.score);
+      const grammar = typeof parsed?.grammar === "string" ? parsed.grammar : "";
+      const tip = typeof parsed?.tip === "string" ? parsed.tip : "";
+      const summary = typeof parsed?.summary === "string" ? parsed.summary : "";
+      const today = todayKeyLocal();
+
+      if (score === null) {
+        setScoreCard({ score: null, raw: raw || "Report not received. Try again.", date: today, level: levelToText(level) });
+      } else {
+        setScoreCard({ score, grammar, tip, summary, date: today, level: levelToText(level) });
+
+        const prev = loadProgress();
+        const s = computeNewStreak(prev.lastDay, prev.streak);
+
+        const newHistory = [
+          ...(Array.isArray(prev.history) ? prev.history : []).filter((x) => x?.date !== today),
+          { date: today, score },
+        ]
+          .sort((a, b) => (a.date > b.date ? 1 : -1))
+          .slice(-7);
+
+        const next = { ...prev, streak: s.streak, lastDay: s.lastDay, history: newHistory, level };
+        saveProgress(next);
+
+        setStreak(next.streak);
+        setHistory(next.history);
+      }
     } catch (e) {
-      setError(e?.message || "Start failed");
-      logStatus("Error");
-      setConnected(false);
-      sessionActiveRef.current = false;
-      clearFollowupTimer();
-      stopVoice(true);
+      setErr(e);
+      setScoreCard({ score: null, raw: "Report failed. Please try again.", date: todayKeyLocal(), level: levelToText(level) });
+    } finally {
+      stoppingRef.current = false;
+      setReportLoading(false);
+      stopAllImmediate();
     }
   }
 
-  function stopVoice(silent = false) {
-    clearFollowupTimer();
-    sessionActiveRef.current = false;
+  const last7 = useMemo(() => {
+    const map = new Map((history || []).map((h) => [h.date, h.score]));
+    const days = [];
+    const today = new Date(todayKeyLocal() + "T00:00:00");
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      days.push({ date: key, score: map.has(key) ? map.get(key) : null });
+    }
+    return days;
+  }, [history]);
 
-    const dc = dcRef.current;
-    try {
-      if (dc) dc.close();
-    } catch {}
-
-    const pc = pcRef.current;
-    try {
-      if (pc) pc.close();
-    } catch {}
-
-    const local = localStreamRef.current;
-    try {
-      if (local) local.getTracks().forEach((t) => t.stop());
-    } catch {}
-
-    dcRef.current = null;
-    pcRef.current = null;
-    localStreamRef.current = null;
-
-    setConnected(false);
-    logStatus(silent ? "Stopped" : "Stopped ✅");
-    if (!silent) setShowScoreCard(true);
-  }
-
-  // cleanup
   useEffect(() => {
-    return () => stopVoice(true);
+    return () => stopAllImmediate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- UI helpers for score ---
-  function addMinuteAndScore() {
-    // Call this from wherever you already detect “completed practice”
-    const k = todayKey();
-    const p = loadProgress();
-    p[k] = p[k] || { minutes: 0, score: 0 };
-    p[k].minutes += 1;
-    p[k].score += 10;
-    saveProgress(p);
-    setProgress(p);
-  }
-
   return (
-    <div style={{ padding: 16, maxWidth: 820, margin: "0 auto", fontFamily: "system-ui, Arial" }}>
-      <h2 style={{ marginBottom: 6 }}>Welcome, Amin sir 👋</h2>
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: 16, paddingBottom: 50 }}>
+      <h2 style={{ margin: "8px 0 8px" }}>Amin Sir AI Tutor</h2>
 
-      <div style={{ marginBottom: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <div>
-          <b>Status:</b> {status}
-        </div>
-        <div>
-          <b>Connection:</b> {connected ? "Connected ✅" : "Not connected"}
-        </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontWeight: 900 }}>Level:</div>
+        <select
+          value={level}
+          onChange={(e) => persistLevel(e.target.value)}
+          style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 800 }}
+        >
+          <option value="beginner">Beginner</option>
+          <option value="medium">Medium</option>
+          <option value="advanced">Advanced</option>
+        </select>
+        <div style={{ marginLeft: "auto", fontWeight: 900 }}>🔥 Streak: {streak} day{streak === 1 ? "" : "s"}</div>
       </div>
 
-      <div style={{ marginBottom: 12, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span><b>Level:</b></span>
-          <select value={level} onChange={(e) => setLevel(e.target.value)} disabled={connected}>
-            <option>Beginner</option>
-            <option>Medium</option>
-            <option>Advanced</option>
-          </select>
-        </label>
+      <div style={{ fontWeight: 800, marginBottom: 6 }}>Status: {status}</div>
+      <div style={{ fontWeight: 800, marginBottom: 6 }}>Step: {step}</div>
+      <div style={{ fontWeight: 800, marginBottom: 12 }}>
+        DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound:{" "}
+        {soundEnabled ? "Enabled ✅" : "Locked"} | Mic: {micOn ? "On ✅" : "Off"}
+      </div>
 
-        {!soundEnabled ? (
-          <button onClick={enableSound} style={{ padding: "10px 14px", fontWeight: 700 }}>
-            Enable Sound 🔊
-          </button>
-        ) : (
-          <button disabled style={{ padding: "10px 14px", opacity: 0.7 }}>
-            Sound Enabled ✅
-          </button>
-        )}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button
+          onClick={startVoice}
+          disabled={startLockRef.current && !connected}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "none",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 900,
+            opacity: startLockRef.current && !connected ? 0.6 : 1,
+          }}
+        >
+          Start Voice 🎤
+        </button>
 
-        {!connected ? (
-          <button onClick={startVoice} style={{ padding: "10px 14px", fontWeight: 800 }}>
-            Start Voice 🎤
-          </button>
-        ) : (
-          <button onClick={() => stopVoice(false)} style={{ padding: "10px 14px", fontWeight: 800 }}>
-            Stop
-          </button>
-        )}
+        <button
+          onClick={enableSoundStrong}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: soundEnabled ? "#eaffea" : "#fff",
+            fontWeight: 900,
+          }}
+        >
+          Enable Sound 🔊 {soundEnabled ? "✅" : ""}
+        </button>
 
-        {/* Optional: quick test button for progress */}
-        <button onClick={addMinuteAndScore} style={{ padding: "10px 14px" }}>
-          +Practice (test)
+        <button
+          onClick={stopWithReport}
+          disabled={!connected || reportLoading}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: !connected || reportLoading ? "#f3f4f6" : "#fff",
+            fontWeight: 900,
+            opacity: !connected || reportLoading ? 0.6 : 1,
+          }}
+        >
+          Stop ⛔ (Score Card)
         </button>
       </div>
 
       {error ? (
-        <pre style={{ background: "#fff3f3", border: "1px solid #ffbdbd", padding: 12, whiteSpace: "pre-wrap" }}>
+        <pre
+          style={{
+            marginTop: 12,
+            padding: 12,
+            borderRadius: 12,
+            background: "#fff1f2",
+            border: "1px solid #fecdd3",
+            color: "#7f1d1d",
+            whiteSpace: "pre-wrap",
+          }}
+        >
           {error}
         </pre>
       ) : null}
 
-      {showScoreCard ? (
-        <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 10, padding: 14 }}>
-          <h3 style={{ marginTop: 0 }}>Score Card</h3>
-          <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontSize: 14, opacity: 0.8 }}>Streak</div>
-              <div style={{ fontSize: 22, fontWeight: 800 }}>{streak} 🔥</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 14, opacity: 0.8 }}>Today</div>
-              <div style={{ fontSize: 22, fontWeight: 800 }}>
-                {progress?.[todayKey()]?.score || 0} pts
-              </div>
-            </div>
-          </div>
+      <audio ref={remoteAudioRef} autoPlay playsInline controls style={{ width: "100%", marginTop: 12 }} />
 
-          <h4 style={{ marginBottom: 8, marginTop: 16 }}>Last 7 Days Progress</h4>
-          <div style={{ display: "grid", gap: 6 }}>
-            {last7.map((d) => (
-              <div
-                key={d.date}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  border: "1px solid #eee",
-                  borderRadius: 8,
-                  padding: "8px 10px",
-                }}
-              >
-                <div style={{ fontWeight: 700 }}>{d.date}</div>
-                <div style={{ opacity: 0.9 }}>
-                  Score: <b>{d.score}</b> | Minutes: <b>{d.minutes}</b>
+      <div style={{ marginTop: 16, padding: 14, border: "1px solid #eee", borderRadius: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>🏆 Today’s Score Card</div>
+          <div style={{ fontWeight: 900 }}>Level: {levelToText(level)}</div>
+        </div>
+
+        {reportLoading ? (
+          <div style={{ marginTop: 10, fontWeight: 800 }}>Generating score…</div>
+        ) : scoreCard ? (
+          scoreCard.score === null ? (
+            <div style={{ marginTop: 10, fontWeight: 800, color: "#b91c1c" }}>{scoreCard.raw || "Report not received."}</div>
+          ) : (
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
+                <div style={{ fontSize: 38, lineHeight: "40px" }}>🏆</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 900, fontSize: 22 }}>
+                    {scoreCard.score}/10 — {scoreLabel(scoreCard.score)}
+                  </div>
+                  <div style={{ color: "#444", fontWeight: 700 }}>Date: {scoreCard.date}</div>
                 </div>
               </div>
-            ))}
-          </div>
 
-          <div style={{ marginTop: 12, opacity: 0.8, fontSize: 13 }}>
-            Auto follow-up is ON: if student is silent after AI finishes, tutor prompts again.
+              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
+                  <div style={{ fontWeight: 900 }}>✅ Grammar Fix</div>
+                  <div style={{ marginTop: 4 }}>{scoreCard.grammar || "No major grammar mistakes today."}</div>
+                </div>
+
+                <div style={{ padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
+                  <div style={{ fontWeight: 900 }}>💡 Tip for Tomorrow</div>
+                  <div style={{ marginTop: 4 }}>{scoreCard.tip || "Speak in full sentences."}</div>
+                </div>
+
+                <div style={{ padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
+                  <div style={{ fontWeight: 900 }}>⭐ Summary</div>
+                  <div style={{ marginTop: 4 }}>{scoreCard.summary || "Keep practicing!"}</div>
+                </div>
+              </div>
+            </div>
+          )
+        ) : (
+          <div style={{ marginTop: 10, color: "#666" }}>Stop the session to generate today’s score card.</div>
+        )}
+
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>📈 Last 7 Days Progress</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+            {last7.map((d) => {
+              const s = d.score;
+              const h = s === null ? 12 : 10 + s * 6;
+              return (
+                <div key={d.date} style={{ textAlign: "center" }}>
+                  <div
+                    title={s === null ? `${d.date}: no practice` : `${d.date}: ${s}/10`}
+                    style={{
+                      height: 74,
+                      border: "1px solid #eee",
+                      borderRadius: 10,
+                      display: "flex",
+                      alignItems: "flex-end",
+                      justifyContent: "center",
+                      padding: 6,
+                    }}
+                  >
+                    <div style={{ width: "100%", height: h, borderRadius: 8, background: s === null ? "#ddd" : "#111" }} />
+                  </div>
+                  <div style={{ fontSize: 11, marginTop: 4, color: "#555" }}>{d.date.slice(5)}</div>
+                </div>
+              );
+            })}
           </div>
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
