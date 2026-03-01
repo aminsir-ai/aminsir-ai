@@ -10,41 +10,40 @@ function json(data, status = 200) {
 
 /**
  * POST /api/realtime
- * Returns an ephemeral client secret for the browser (optional; you already use this).
+ * Keeps your existing flow (token), but your current page.js no longer depends on it.
+ * We keep it anyway so you don't break other pages.
  */
 export async function POST() {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return json({ error: { message: "Missing OPENAI_API_KEY on server" } }, 500);
 
-    // Create a realtime client secret (ephemeral key)
-    const sessionConfig = {
-      session: {
-        type: "realtime",
-        model: "gpt-realtime",
-        audio: { output: { voice: "alloy" } },
-      },
-    };
-
+    // If you don't need token anymore, you can return a dummy value.
+    // But keeping a real token is ok.
     const r = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(sessionConfig),
+      body: JSON.stringify({
+        session: {
+          type: "realtime",
+          model: process.env.OPENAI_REALTIME_MODEL || "gpt-4o-realtime-preview",
+          audio: { output: { voice: "alloy" } },
+        },
+      }),
     });
 
     const data = await r.json().catch(() => null);
 
     if (!r.ok) {
       return json(
-        { error: { message: data?.error?.message || "Failed to create realtime client secret", raw: data } },
+        { error: { message: data?.error?.message || "Failed to create client secret", raw: data } },
         r.status
       );
     }
 
-    // Your frontend expects { value: "..." }
     const value = data?.client_secret?.value || data?.value;
     if (!value) return json({ error: { message: "Token missing in OpenAI response", raw: data } }, 500);
 
@@ -56,93 +55,78 @@ export async function POST() {
 
 /**
  * PUT /api/realtime
- * Receives SDP offer from the browser and returns SDP answer.
+ * Receives SDP offer (RAW) from browser and returns SDP answer (RAW).
  *
- * IMPORTANT FIX:
- * - We must forward SDP as RAW TEXT (no JSON quoting)
- * - We call OpenAI unified WebRTC endpoint: POST /v1/realtime/calls with multipart FormData
+ * CRITICAL: forward SDP as raw text with Content-Type: application/sdp
  */
 export async function PUT(req) {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return json({ error: { message: "Missing OPENAI_API_KEY on server" } }, 500);
 
-    // Accept SDP from either:
-    // A) JSON body { sdp: "v=0..." }
-    // B) raw text body (application/sdp or text/plain)
-    let offerSdp = "";
+    // Read offer SDP (raw)
+    const offerSdpRaw = await req.text().catch(() => "");
+    let offerSdp = String(offerSdpRaw || "").trim();
 
-    const ct = req.headers.get("content-type") || "";
-    if (ct.includes("application/json")) {
-      const body = await req.json().catch(() => ({}));
-      offerSdp = body?.sdp || "";
-    } else {
-      offerSdp = (await req.text().catch(() => "")) || "";
-    }
-
-    offerSdp = String(offerSdp || "").trim();
-
-    // ✅ Critical: strip accidental surrounding quotes
-    // (this is what caused your exact error)
+    // Strip accidental quotes (defensive)
     if (
       (offerSdp.startsWith('"') && offerSdp.endsWith('"')) ||
       (offerSdp.startsWith("'") && offerSdp.endsWith("'"))
     ) {
-      offerSdp = offerSdp.slice(1, -1);
+      offerSdp = offerSdp.slice(1, -1).trim();
     }
 
-    if (!offerSdp.startsWith("v=")) {
+    if (!offerSdp || !offerSdp.startsWith("v=")) {
       return json(
         {
           error: {
             message:
-              "Invalid SDP offer received by server (must start with v=). First 60 chars: " +
-              offerSdp.slice(0, 60),
+              "Invalid SDP offer received (must start with v=). First 80 chars: " + offerSdp.slice(0, 80),
           },
         },
         400
       );
     }
 
-    // Session config for the call (you can extend later)
-    const sessionConfig = JSON.stringify({
-      type: "realtime",
-      model: "gpt-realtime",
-      audio: { output: { voice: "alloy" } },
-    });
+    const model = process.env.OPENAI_REALTIME_MODEL || "gpt-4o-realtime-preview";
 
-    // OpenAI expects multipart FormData: sdp + session
-    const fd = new FormData();
-    fd.set("sdp", offerSdp); // ✅ raw SDP, NOT JSON.stringify
-    fd.set("session", sessionConfig);
-
-    const r = await fetch("https://api.openai.com/v1/realtime/calls", {
+    // ✅ The stable WebRTC SDP exchange endpoint pattern:
+    // Send offer SDP as raw application/sdp, receive answer SDP as raw text
+    const r = await fetch(`https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        // NOTE: Do NOT set Content-Type manually for FormData; fetch will set boundary.
+        "Content-Type": "application/sdp",
       },
-      body: fd,
+      body: offerSdp,
     });
 
-    const answerText = await r.text().catch(() => "");
+    const answerSdp = await r.text().catch(() => "");
 
     if (!r.ok) {
-      // If OpenAI returned JSON error, show it nicely
+      // Try parse JSON error if any
       let parsed = null;
       try {
-        parsed = JSON.parse(answerText);
+        parsed = JSON.parse(answerSdp);
       } catch {}
-
       const msg =
         parsed?.error?.message ||
-        `OpenAI /v1/realtime/calls failed (${r.status}). Response: ${answerText.slice(0, 200)}`;
-
-      return json({ error: { message: msg, raw: parsed || answerText } }, r.status);
+        `OpenAI realtime SDP exchange failed (${r.status}). Response: ${answerSdp.slice(0, 200)}`;
+      return json({ error: { message: msg, raw: parsed || answerSdp } }, r.status);
     }
 
-    // Return in the format your page.js accepts
-    return json({ sdp: answerText });
+    if (!answerSdp || !answerSdp.trim().startsWith("v=")) {
+      return json(
+        { error: { message: "OpenAI returned invalid/empty answer SDP.", raw: answerSdp.slice(0, 200) } },
+        500
+      );
+    }
+
+    // Return raw SDP (NOT JSON)
+    return new Response(answerSdp, {
+      status: 200,
+      headers: { "Content-Type": "application/sdp" },
+    });
   } catch (e) {
     return json({ error: { message: e?.message || "Server error" } }, 500);
   }
