@@ -116,35 +116,36 @@ export default function ChatPage() {
 
       dc.onerror = (e) => console.error("DataChannel error", e);
 
-      // IMPORTANT: receive audio from model
+      // Receive audio from model
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
       // 3) Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // ✅ CRITICAL FIX:
-      // Send RAW SDP to your server with Content-Type: application/sdp (NO JSON)
+      // ✅ Send RAW SDP to server
       const sdpResponse = await fetch("/api/realtime", {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/sdp",
-        },
+        headers: { "Content-Type": "application/sdp" },
         body: offer.sdp,
       });
 
+      const answerText = await sdpResponse.text().catch(() => "");
+
       if (!sdpResponse.ok) {
-        const t = await sdpResponse.text().catch(() => "");
-        throw new Error(t || "PUT /api/realtime failed");
+        throw new Error(
+          "PUT /api/realtime failed:\n" + (answerText ? answerText.slice(0, 600) : "no response text")
+        );
       }
 
-      const answerSdp = await sdpResponse.text();
-
-      if (!answerSdp || !answerSdp.trim().startsWith("v=")) {
-        throw new Error("Invalid answer SDP returned from server.");
+      // ✅ DEBUG: show exact server output if not SDP
+      if (!answerText || !answerText.trim().startsWith("v=")) {
+        throw new Error(
+          "Invalid answer SDP returned from server. Server said:\n" + answerText.slice(0, 600)
+        );
       }
 
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      await pc.setRemoteDescription({ type: "answer", sdp: answerText });
 
       setStatus("Connected ✅");
       setConnected(true);
@@ -267,7 +268,6 @@ export default function ChatPage() {
     setPttActive(false);
     try {
       stopTalking(false);
-      // Ask assistant to respond after student stops
       sendJSON({ type: "response.create" });
     } catch (e) {
       setErr(e);
