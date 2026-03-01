@@ -11,7 +11,12 @@ export default function ChatPage() {
 
   const [status, setStatus] = useState("Idle");
   const [error, setError] = useState("");
+
   const [connected, setConnected] = useState(false);
+  const [dcOpen, setDcOpen] = useState(false);
+  const [gotRemoteTrack, setGotRemoteTrack] = useState(false);
+
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
   const [pttActive, setPttActive] = useState(false);
 
   function setErr(e) {
@@ -20,14 +25,33 @@ export default function ChatPage() {
     setError(msg);
   }
 
-  function ensureRemoteAudioPlays() {
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  // Strong audio unlock for mobile browsers
+  async function unlockAudio() {
     const el = remoteAudioRef.current;
-    if (!el) return;
+    if (!el) return false;
+
     try {
       el.muted = false;
+      el.volume = 1;
+
+      // Try to play immediately (must be in user gesture)
       const p = el.play?.();
-      if (p && typeof p.catch === "function") p.catch(() => {});
-    } catch {}
+      if (p && typeof p.then === "function") {
+        await p;
+      }
+
+      setAudioUnlocked(true);
+      return true;
+    } catch (e) {
+      // If blocked, we keep "Enable Sound" button visible
+      console.warn("Audio unlock blocked:", e);
+      setAudioUnlocked(false);
+      return false;
+    }
   }
 
   function sendJSON(obj) {
@@ -49,7 +73,6 @@ export default function ChatPage() {
   }
 
   async function startMicWarmup() {
-    // Start mic quickly to "wake up" permissions + VAD
     if (localStreamRef.current) return;
 
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -63,40 +86,28 @@ export default function ChatPage() {
 
     localStreamRef.current = stream;
 
-    // Add mic track immediately
     if (pcRef.current) {
       pcRef.current.addTrack(stream.getTracks()[0], stream);
     }
 
-    // Warmup: enable for 1 second, then disable
+    // Enable for a moment then disable (helps VAD + iOS)
     stream.getTracks().forEach((t) => (t.enabled = true));
     setTimeout(() => {
       try {
         stream.getTracks().forEach((t) => (t.enabled = false));
       } catch {}
-    }, 1000);
-  }
-
-  function stopAll() {
-    try {
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((t) => {
-          try {
-            t.stop();
-          } catch {}
-        });
-        localStreamRef.current = null;
-      }
-    } catch {}
+    }, 900);
   }
 
   async function connectRealtime() {
     setError("");
     setStatus("Connecting...");
+    setDcOpen(false);
+    setGotRemoteTrack(false);
 
     try {
-      // Unlock audio immediately (mobile needs this on click)
-      ensureRemoteAudioPlays();
+      // IMPORTANT: this function is called by user click -> perfect time to unlock audio
+      await unlockAudio();
 
       const EPHEMERAL_KEY = await getEphemeralKey();
 
@@ -112,56 +123,71 @@ export default function ChatPage() {
           setStatus("Connected ✅");
         } else if (s === "failed" || s === "disconnected" || s === "closed") {
           setConnected(false);
-          setStatus("Disconnected");
+          setStatus(s === "closed" ? "Closed" : `Connection: ${s}`);
         }
       };
 
-      pc.ontrack = (e) => {
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = e.streams[0];
-          ensureRemoteAudioPlays();
+      pc.ontrack = async (e) => {
+        try {
+          setGotRemoteTrack(true);
+
+          const el = remoteAudioRef.current;
+          if (el) {
+            el.srcObject = e.streams[0];
+            // Try play again when track arrives
+            await unlockAudio();
+          }
+        } catch (err) {
+          console.warn("ontrack play error:", err);
         }
       };
 
+      // Receive model audio
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
+      // Data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
       dc.onopen = async () => {
-        // Start mic warmup so greeting doesn't wait
+        setDcOpen(true);
+
+        // Warm up mic (helps iOS / VAD)
         try {
           await startMicWarmup();
         } catch (e) {
-          console.warn("mic warmup failed", e);
+          console.warn("Mic warmup failed:", e);
         }
 
-        // Set teacher personality
+        // Give a tiny moment to stabilize
+        await sleep(200);
+
+        // Session update (teacher mode)
         sendJSON({
           type: "session.update",
           session: {
             turn_detection: { type: "server_vad" },
             input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
             voice: "alloy",
-            audio: {
-              output: { voice: "alloy", format: "pcm16" },
-            },
+            audio: { output: { voice: "alloy", format: "pcm16" } },
             instructions: `
 You are Amin Sir, a friendly Indian English teacher for school students.
 
 Rules:
 • Speak slow and clear English.
-• Indian teacher tone.
-• Short sentences.
+• Short sentences only.
 • One question at a time.
 • Encourage: "Good try", "Very good", "Nice answer".
-• Wait for student reply. Do not speak continuously.
+• Wait for the student reply.
+Do NOT speak long paragraphs.
             `.trim(),
             modalities: ["text", "audio"],
           },
         });
 
-        // Force exact first line (use USER role here—more reliable than system in some realtime flows)
+        await sleep(150);
+
+        // Force exact first sentence
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -171,20 +197,26 @@ Rules:
               {
                 type: "input_text",
                 text:
-                  'Say EXACTLY this in audio: "Hello beta! I am Amin Sir, your English speaking teacher. What is your name?"',
+                  'Say EXACTLY in audio: "Hello beta! I am Amin Sir, your English speaking teacher. What is your name?"',
               },
             ],
           },
         });
 
-        // Speak immediately
+        // Speak now
         sendJSON({
           type: "response.create",
           response: { modalities: ["audio"], max_output_tokens: 80 },
         });
+
+        // Try play again
+        await sleep(200);
+        await unlockAudio();
       };
 
-      // Create offer
+      dc.onerror = (e) => console.warn("DataChannel error", e);
+
+      // Offer/Answer with OpenAI
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -198,47 +230,65 @@ Rules:
         body: offer.sdp,
       });
 
-      const answerSdp = await sdpResponse.text();
-
-      if (!sdpResponse.ok) throw new Error(answerSdp);
-      if (!answerSdp.trim().startsWith("v=")) throw new Error("Invalid answer SDP:\n" + answerSdp);
+      const answerSdp = await sdpResponse.text().catch(() => "");
+      if (!sdpResponse.ok) throw new Error(answerSdp || `SDP exchange failed (${sdpResponse.status})`);
+      if (!answerSdp.trim().startsWith("v=")) throw new Error("Invalid answer SDP:\n" + answerSdp.slice(0, 400));
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
       setConnected(true);
       setStatus("Connected ✅");
     } catch (e) {
-      setErr(e);
+      setConnected(false);
       setStatus("Error");
+      setErr(e);
     }
   }
 
   function disconnectRealtime() {
     try {
-      stopAll();
-      if (dcRef.current) dcRef.current.close();
-      if (pcRef.current) pcRef.current.close();
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+        localStreamRef.current = null;
+      }
+
+      if (dcRef.current) {
+        try {
+          dcRef.current.close();
+        } catch {}
+        dcRef.current = null;
+      }
+
+      if (pcRef.current) {
+        try {
+          pcRef.current.close();
+        } catch {}
+        pcRef.current = null;
+      }
+
       if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
 
-      dcRef.current = null;
-      pcRef.current = null;
-
       setConnected(false);
+      setDcOpen(false);
+      setGotRemoteTrack(false);
       setStatus("Closed");
-    } catch {}
+    } catch (e) {
+      setErr(e);
+    }
   }
 
   async function pttStart() {
     if (!connected) return;
     setPttActive(true);
     setError("");
-    ensureRemoteAudioPlays();
 
     try {
-      if (!localStreamRef.current) {
-        await startMicWarmup();
-      }
-      // Enable mic while holding
+      await unlockAudio();
+      if (!localStreamRef.current) await startMicWarmup();
       localStreamRef.current?.getTracks()?.forEach((t) => (t.enabled = true));
     } catch (e) {
       setPttActive(false);
@@ -249,14 +299,8 @@ Rules:
   function pttStop() {
     setPttActive(false);
     try {
-      // Disable mic on release
       localStreamRef.current?.getTracks()?.forEach((t) => (t.enabled = false));
-
-      // Ask tutor to reply
-      sendJSON({
-        type: "response.create",
-        response: { max_output_tokens: 120 },
-      });
+      sendJSON({ type: "response.create", response: { max_output_tokens: 120 } });
     } catch (e) {
       setErr(e);
     }
@@ -273,33 +317,95 @@ Rules:
 
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: 16, paddingBottom: 120 }}>
-      <h2>Welcome, Amin sir 👋</h2>
+      <h2 style={{ margin: "8px 0 10px" }}>Welcome, Amin sir 👋</h2>
 
-      <div style={{ marginBottom: 10, fontWeight: 700 }}>Status: {status}</div>
-
-      {!connected ? (
-        <button
-          onClick={connectRealtime}
-          style={{ padding: 12, borderRadius: 10, background: "#111", color: "#fff", fontWeight: 800 }}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: 12,
+            border: "1px solid #eee",
+            background: connected ? "#ecfdf5" : "#fff7ed",
+            fontWeight: 800,
+          }}
         >
-          Start Voice 🎤
-        </button>
-      ) : (
+          Status: {status}
+        </div>
+
+        <div style={{ fontWeight: 700, color: "#333" }}>
+          DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {!connected ? (
+          <button
+            onClick={connectRealtime}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "none",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 900,
+              cursor: "pointer",
+            }}
+          >
+            Start Voice 🎤
+          </button>
+        ) : (
+          <button
+            onClick={disconnectRealtime}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid #ddd",
+              background: "#fff",
+              color: "#111",
+              fontWeight: 900,
+              cursor: "pointer",
+            }}
+          >
+            Stop
+          </button>
+        )}
+
+        {/* Audio unlock button (mobile fix) */}
         <button
-          onClick={disconnectRealtime}
-          style={{ padding: 12, borderRadius: 10, border: "1px solid #ddd", background: "#fff", fontWeight: 800 }}
+          onClick={unlockAudio}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: audioUnlocked ? "#ecfdf5" : "#fff",
+            fontWeight: 900,
+            cursor: "pointer",
+          }}
         >
-          Stop
+          {audioUnlocked ? "Sound Enabled ✅" : "Enable Sound 🔊"}
         </button>
-      )}
+      </div>
 
-      {error && (
-        <pre style={{ background: "#fee", padding: 10, marginTop: 10, whiteSpace: "pre-wrap" }}>{error}</pre>
-      )}
+      {error ? (
+        <pre
+          style={{
+            marginTop: 12,
+            padding: 12,
+            borderRadius: 12,
+            background: "#fff1f2",
+            border: "1px solid #fecdd3",
+            color: "#7f1d1d",
+            overflowX: "auto",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {error}
+        </pre>
+      ) : null}
 
-      <audio ref={remoteAudioRef} autoPlay playsInline />
+      <audio ref={remoteAudioRef} autoPlay playsInline controls style={{ width: "100%", marginTop: 12 }} />
 
-      {/* Mobile Hold-to-talk bar */}
+      {/* Bottom PTT bar */}
       <div
         style={{
           position: "fixed",
@@ -307,10 +413,11 @@ Rules:
           right: 0,
           bottom: 0,
           padding: 12,
-          background: "#fff",
-          borderTop: "1px solid #ddd",
+          background: "rgba(255,255,255,0.96)",
+          borderTop: "1px solid #eee",
           display: "flex",
           gap: 10,
+          zIndex: 50,
         }}
       >
         <button
@@ -336,12 +443,14 @@ Rules:
           disabled={!connected}
           style={{
             flex: 1,
-            padding: 16,
-            borderRadius: 14,
+            padding: "14px 16px",
+            borderRadius: 16,
+            border: "none",
             background: !connected ? "#bbb" : pttActive ? "#e53935" : "#16a34a",
             color: "#fff",
             fontWeight: 900,
             fontSize: 16,
+            cursor: !connected ? "not-allowed" : "pointer",
           }}
         >
           {!connected ? "Connect first" : pttActive ? "Release to Stop" : "Hold to Talk 🎤"}
