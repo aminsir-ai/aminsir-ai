@@ -22,20 +22,28 @@ export default function ChatPage() {
     setError(msg);
   }
 
-  async function enableSound() {
+  // IMPORTANT: do NOT await this in startVoice()
+  function enableSoundNonBlocking() {
     setError("");
     try {
       const el = remoteAudioRef.current;
       if (!el) return;
       el.muted = false;
       el.volume = 1;
+
       const p = el.play?.();
-      if (p && typeof p.then === "function") await p;
-      setSoundEnabled(true);
-    } catch (e) {
+      if (p && typeof p.then === "function") {
+        p.then(() => setSoundEnabled(true)).catch(() => setSoundEnabled(false));
+      } else {
+        setSoundEnabled(true);
+      }
+    } catch {
       setSoundEnabled(false);
-      setErr("Sound is blocked. Tap Enable Sound again, or increase phone volume.");
     }
+  }
+
+  async function enableSoundButton() {
+    enableSoundNonBlocking();
   }
 
   function sendJSON(obj) {
@@ -45,7 +53,7 @@ export default function ChatPage() {
   }
 
   async function getEphemeralKey() {
-    setStep("POST /api/realtime …");
+    setStep("Fetching key…");
     const r = await fetch("/api/realtime", { method: "POST" });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data, null, 2));
@@ -68,27 +76,22 @@ export default function ChatPage() {
   }
 
   async function ensureMicTrack(pc) {
-    setStep("Requesting microphone permission…");
+    setStep("Requesting microphone…");
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
     });
 
     localStreamRef.current = stream;
+
     const track = stream.getAudioTracks()[0];
     if (!track) throw new Error("No microphone track");
 
-    // Add only once
     const already = pc.getSenders().some((s) => s.track && s.track.kind === "audio");
     if (!already) pc.addTrack(track, stream);
 
-    // default off until Hold-to-Talk
-    track.enabled = false;
+    track.enabled = false; // PTT controls it
   }
 
   async function startVoice() {
@@ -99,12 +102,12 @@ export default function ChatPage() {
     setGotRemoteTrack(false);
 
     try {
-      // unlock audio if possible
-      await enableSound();
+      // DO NOT await audio.play here (it can hang on mobile)
+      enableSoundNonBlocking();
 
       const key = await getEphemeralKey();
 
-      setStep("Creating RTCPeerConnection…");
+      setStep("Creating peer…");
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
@@ -114,11 +117,12 @@ export default function ChatPage() {
         setStatus(`PC: ${pc.connectionState}`);
       };
 
-      pc.ontrack = async (e) => {
+      pc.ontrack = (e) => {
         setGotRemoteTrack(true);
         if (remoteAudioRef.current) {
           remoteAudioRef.current.srcObject = e.streams[0];
-          await enableSound();
+          // Try playing again once real audio exists
+          enableSoundNonBlocking();
         }
       };
 
@@ -134,7 +138,6 @@ export default function ChatPage() {
       dc.onopen = () => {
         setDcOpen(true);
 
-        // Session config
         sendJSON({
           type: "session.update",
           session: {
@@ -144,7 +147,6 @@ export default function ChatPage() {
           },
         });
 
-        // Greeting
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -168,7 +170,7 @@ export default function ChatPage() {
       await pc.setLocalDescription(offer);
 
       const sdp = offer?.sdp || "";
-      if (!sdp.trim().startsWith("v=")) throw new Error("Offer SDP is empty/invalid");
+      if (!sdp.trim().startsWith("v=")) throw new Error("Offer SDP empty/invalid");
 
       setStep("Sending offer to OpenAI…");
       const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
@@ -252,7 +254,7 @@ export default function ChatPage() {
         </button>
 
         <button
-          onClick={enableSound}
+          onClick={enableSoundButton}
           style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", fontWeight: 900 }}
         >
           Enable Sound 🔊
@@ -291,7 +293,6 @@ export default function ChatPage() {
 
       <audio ref={remoteAudioRef} autoPlay playsInline controls style={{ width: "100%", marginTop: 12 }} />
 
-      {/* Mobile Hold to Talk */}
       <div
         style={{
           position: "fixed",
