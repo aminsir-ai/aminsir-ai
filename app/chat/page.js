@@ -10,30 +10,20 @@ export default function ChatPage() {
   const remoteAudioRef = useRef(null);
   const remoteStreamRef = useRef(null);
 
-  const sendersRef = useRef([]); // RTCRtpSender list
+  const sendersRef = useRef([]);
 
   const [status, setStatus] = useState("Idle");
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
 
-  // Mobile-first tutor mode + push-to-talk
+  // Mobile tutor controls
   const [tutorMode, setTutorMode] = useState(true);
   const [pttActive, setPttActive] = useState(false);
 
-  // ---- Helpers ----
   function setErr(e) {
     const msg = typeof e === "string" ? e : e?.message || JSON.stringify(e, null, 2);
     console.error(e);
     setError(msg);
-  }
-
-  async function getEphemeralToken() {
-    const r = await fetch("/api/realtime", { method: "POST" });
-    const data = await r.json().catch(() => ({}));
-
-    if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data, null, 2));
-    if (!data?.value) throw new Error("Token missing from /api/realtime POST response.");
-    return data.value;
   }
 
   function sendJSON(obj) {
@@ -56,14 +46,11 @@ export default function ChatPage() {
     } catch {}
   }
 
-  // ---- Connect / Disconnect ----
   async function connectRealtime() {
     setError("");
     setStatus("Connecting...");
 
     try {
-      const token = await getEphemeralToken();
-
       // 1) Create PeerConnection
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -97,12 +84,12 @@ export default function ChatPage() {
         }
       };
 
-      // Create data channel
+      // 2) Data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
       dc.onopen = () => {
-        // Session config (safe defaults)
+        // Configure session (via data channel events)
         sendJSON({
           type: "session.update",
           session: {
@@ -127,54 +114,34 @@ export default function ChatPage() {
         sendJSON({ type: "response.create" });
       };
 
-      dc.onmessage = () => {};
       dc.onerror = (e) => console.error("DataChannel error", e);
 
-      // Receive audio even before mic is added
+      // IMPORTANT: receive audio from model
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
-      // 2) Create offer
+      // 3) Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 3) Send SDP to server (PUT) to get answer SDP
-      const r = await fetch("/api/realtime", {
+      // ✅ CRITICAL FIX:
+      // Send RAW SDP to your server with Content-Type: application/sdp (NO JSON)
+      const sdpResponse = await fetch("/api/realtime", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token,
-          sdp: pc.localDescription.sdp,
-        }),
+        headers: {
+          "Content-Type": "application/sdp",
+        },
+        body: offer.sdp,
       });
 
-      // ✅ FIX: accept JSON or raw text, and multiple possible keys
-      let data = null;
-      let text = "";
-      const ct = r.headers.get("content-type") || "";
-
-      if (ct.includes("application/json")) {
-        data = await r.json().catch(() => null);
-      } else {
-        text = await r.text().catch(() => "");
+      if (!sdpResponse.ok) {
+        const t = await sdpResponse.text().catch(() => "");
+        throw new Error(t || "PUT /api/realtime failed");
       }
 
-      if (!r.ok) {
-        const msg =
-          (data && (data?.error?.message || data?.message)) ||
-          text ||
-          "PUT /api/realtime failed";
-        throw new Error(msg);
-      }
+      const answerSdp = await sdpResponse.text();
 
-      const answerSdp =
-        (data && (data.sdp || data.answer?.sdp || data.data?.sdp || data.answer)) ||
-        (typeof text === "string" && text.trim().startsWith("v=") ? text.trim() : "");
-
-      if (!answerSdp) {
-        throw new Error(
-          "Answer SDP missing from /api/realtime PUT response. Received: " +
-            JSON.stringify(data || { text: text.slice(0, 200) }, null, 2)
-        );
+      if (!answerSdp || !answerSdp.trim().startsWith("v=")) {
+        throw new Error("Invalid answer SDP returned from server.");
       }
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
@@ -222,13 +189,12 @@ export default function ChatPage() {
     }
   }
 
-  // ---- Mic: start/stop talking ----
+  // ---- Mic (push-to-talk) ----
   async function startTalking() {
     if (!pcRef.current) throw new Error("Not connected. Click Start Voice first.");
 
-    ensureRemoteAudioPlays(); // user gesture unlocks audio on mobile
+    ensureRemoteAudioPlays();
 
-    // already have stream -> just enable
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => (t.enabled = true));
       return;
@@ -285,7 +251,6 @@ export default function ChatPage() {
     }
   }
 
-  // ---- Push-to-talk functions ----
   async function pttStart() {
     if (!connected) return;
     setPttActive(true);
@@ -302,8 +267,7 @@ export default function ChatPage() {
     setPttActive(false);
     try {
       stopTalking(false);
-
-      // Ask assistant to respond after release
+      // Ask assistant to respond after student stops
       sendJSON({ type: "response.create" });
     } catch (e) {
       setErr(e);
@@ -319,7 +283,6 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- UI ----
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: 16, paddingBottom: 120 }}>
       <h2 style={{ margin: "8px 0 4px" }}>Welcome, Amin sir 👋</h2>
@@ -387,10 +350,8 @@ export default function ChatPage() {
         </pre>
       ) : null}
 
-      {/* Remote audio */}
       <audio ref={remoteAudioRef} autoPlay playsInline />
 
-      {/* Tutor Card */}
       <div
         style={{
           marginTop: 16,
@@ -410,7 +371,8 @@ export default function ChatPage() {
                 <b>Mobile steps:</b> Tap <b>Start Voice</b> once → then <b>Hold to Talk</b> → release for reply.
               </div>
               <div>
-                Tip: First tap unlocks audio on mobile. If you don’t hear the tutor, press <b>Hold to Talk</b> once and release.
+                Tip: First tap unlocks audio on mobile. If you don’t hear the tutor, press <b>Hold to Talk</b> once and
+                release.
               </div>
             </>
           ) : (
@@ -419,7 +381,7 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* Mobile Tutor Mode Bottom Bar */}
+      {/* Bottom bar */}
       <div
         style={{
           position: "fixed",
