@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_KEY = "aminsir_progress_v4";
+const LS_KEY = "aminsir_progress_v5";
 const VOICE = "onyx"; // male voice
 
 function todayKeyLocal() {
@@ -78,10 +78,14 @@ export default function ChatPage() {
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
 
-  // ✅ Mobile audio fallback (important)
+  // Mobile audio fallback
   const audioCtxRef = useRef(null);
-  const audioSrcRef = useRef(null); // MediaStreamAudioSourceNode
+  const audioSrcRef = useRef(null);
   const remoteStreamRef = useRef(null);
+
+  // ✅ prevents double start + prevents repeated greeting
+  const startLockRef = useRef(false);
+  const greetedRef = useRef(false);
 
   // Report capture
   const stoppingRef = useRef(false);
@@ -124,30 +128,23 @@ export default function ChatPage() {
     setError(msg);
   }
 
-  // ✅ Strong unlock for mobile audio (user tap)
   async function enableSoundStrong() {
     setError("");
     try {
-      // 1) unlock audio element
       const el = remoteAudioRef.current;
       if (el) {
         el.muted = false;
         el.volume = 1;
         el.playsInline = true;
-        // attempt play
         const p = el.play?.();
-        if (p && typeof p.then === "function") {
-          await p;
-        }
+        if (p && typeof p.then === "function") await p;
       }
 
-      // 2) unlock / resume AudioContext (mobile fix)
       const AC = window.AudioContext || window.webkitAudioContext;
       if (AC) {
         if (!audioCtxRef.current) audioCtxRef.current = new AC();
         if (audioCtxRef.current.state === "suspended") await audioCtxRef.current.resume();
 
-        // if we already have remote stream, route it to speakers
         if (remoteStreamRef.current) {
           try {
             if (audioSrcRef.current) audioSrcRef.current.disconnect();
@@ -252,37 +249,45 @@ export default function ChatPage() {
     };
   }
 
+  // ✅ Normal teacher speed (NOT slow motion) + Hinglish rule + anti-repeat rule
   function buildTutorInstructions(selectedLevel) {
     const prof = levelProfile(selectedLevel);
+
     return `
 You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
 
-SPEED (MUST):
-• Speak VERY SLOW like a teacher.
-• Use short sentences only.
-• Use small pauses: add "…"
-• One question at a time.
+SPEED:
+• Speak at normal TEACHER speed (not fast, not slow motion).
+• Use short sentences. 1–2 sentences per turn.
 
 LANGUAGE MIX (MUST):
 • 80% English + 20% very simple Hindi (Hinglish).
-• Hindi only for quick help. Simple words only.
-Example:
-"Good! … Very nice. … Ab ek aur question. … Tell me about your school."
+• Hindi only for quick help/explanation. Keep Hindi very simple.
+
+ANTI-REPEAT (VERY IMPORTANT):
+• Never repeat the same greeting again.
+• Greet only once per session.
+• Do not say "Hello beta I am Amin Sir" again after the first greeting.
+• If you already greeted, immediately ask a NEW question.
 
 LEVEL: ${levelToText(selectedLevel)}
 • Vocabulary: ${prof.vocab}
 • Questions: ${prof.questions}
 • Correction: ${prof.correction}
 
-During conversation:
-• Do NOT give scores.
-• Just teach + encourage.
-
+Conversation:
+• One question at a time.
+• Keep student talking (ask follow-up).
+• Do NOT give scores during conversation.
 Always respond in AUDIO.
 `.trim();
   }
 
   async function startVoice() {
+    // ✅ lock: prevent double start
+    if (startLockRef.current) return;
+    startLockRef.current = true;
+
     setError("");
     setScoreCard(null);
     setReportLoading(false);
@@ -292,6 +297,8 @@ Always respond in AUDIO.
     setDcOpen(false);
     setGotRemoteTrack(false);
     setConnected(false);
+
+    greetedRef.current = false; // reset greeting flag for new session
 
     try {
       const key = await getEphemeralKey();
@@ -309,21 +316,13 @@ Always respond in AUDIO.
 
       pc.ontrack = (e) => {
         setGotRemoteTrack(true);
-
-        // Save remote stream
         const stream = e.streams?.[0];
         if (stream) remoteStreamRef.current = stream;
 
-        // Attach to audio element
         const el = remoteAudioRef.current;
-        if (el && stream) {
-          el.srcObject = stream;
-        }
+        if (el && stream) el.srcObject = stream;
 
-        // If sound already enabled, also route via AudioContext for mobile
-        if (soundEnabled) {
-          enableSoundStrong();
-        }
+        if (soundEnabled) enableSoundStrong();
       };
 
       setStep("Adding transceiver…");
@@ -339,7 +338,6 @@ Always respond in AUDIO.
       dc.onopen = async () => {
         setDcOpen(true);
 
-        // ✅ Force audio output formats (more compatible)
         sendJSON({
           type: "session.update",
           session: {
@@ -352,30 +350,31 @@ Always respond in AUDIO.
           },
         });
 
-        await new Promise((r) => setTimeout(r, 250));
+        // ✅ greet only once
+        if (!greetedRef.current) {
+          greetedRef.current = true;
 
-        // Greeting
-        sendJSON({
-          type: "conversation.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `Say exactly in AUDIO, very slow with pauses (…):
-"Hello beta… I am Amin Sir… We will practice English speaking… Level is ${levelToText(
-                  level
-                )}… Aapka naam kya hai? … What is your name?"`,
-              },
-            ],
-          },
-        });
+          sendJSON({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: `Say in AUDIO at normal teacher speed (not slow):
+"Hello beta! I am Amin Sir. We will practice English speaking. Level is ${levelToText(level)}.
+Aapka naam kya hai? What is your name?"`,
+                },
+              ],
+            },
+          });
 
-        sendJSON({
-          type: "response.create",
-          response: { modalities: ["audio"], max_output_tokens: 180 },
-        });
+          sendJSON({
+            type: "response.create",
+            response: { modalities: ["audio"], max_output_tokens: 170 },
+          });
+        }
       };
 
       setStep("Creating offer…");
@@ -409,6 +408,10 @@ Always respond in AUDIO.
     } catch (e) {
       setStatus("Error");
       setErr(e);
+    } finally {
+      // allow start again only when session is closed by user
+      // keep lock if connected; unlock if failed
+      if (!connected) startLockRef.current = false;
     }
   }
 
@@ -447,7 +450,6 @@ Always respond in AUDIO.
         remoteAudioRef.current.srcObject = null;
       }
 
-      // audio context cleanup
       try {
         if (audioSrcRef.current) {
           audioSrcRef.current.disconnect();
@@ -455,6 +457,9 @@ Always respond in AUDIO.
         }
       } catch {}
     } catch {}
+
+    greetedRef.current = false;
+    startLockRef.current = false; // ✅ unlock start now
 
     setDcOpen(false);
     setGotRemoteTrack(false);
@@ -517,7 +522,7 @@ Return STRICT JSON only (no extra text), exactly:
 
 Student level: ${levelToText(level)}
 Vocabulary: ${prof.vocab}
-Keep it short and simple.
+Keep it short.
               `.trim(),
             },
           ],
@@ -553,8 +558,7 @@ Keep it short and simple.
       if (score === null) {
         setScoreCard({ score: null, raw: raw || "Report not received. Try again.", date: today, level: levelToText(level) });
       } else {
-        const card = { score, grammar, tip, summary, date: today, level: levelToText(level) };
-        setScoreCard(card);
+        setScoreCard({ score, grammar, tip, summary, date: today, level: levelToText(level) });
 
         const prev = loadProgress();
         const s = computeNewStreak(prev.lastDay, prev.streak);
@@ -628,12 +632,20 @@ Keep it short and simple.
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <button
           onClick={startVoice}
-          style={{ padding: "10px 14px", borderRadius: 12, border: "none", background: "#111", color: "#fff", fontWeight: 900 }}
+          disabled={startLockRef.current && !connected}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "none",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 900,
+            opacity: startLockRef.current && !connected ? 0.6 : 1,
+          }}
         >
           Start Voice 🎤
         </button>
 
-        {/* ✅ Make this the required tap on mobile */}
         <button
           onClick={enableSoundStrong}
           style={{
@@ -729,20 +741,7 @@ Keep it short and simple.
         <div style={{ marginTop: 14 }}>
           <div style={{ fontWeight: 900, marginBottom: 8 }}>📈 Last 7 Days Progress</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
-            {useMemo(() => {
-              const map = new Map((history || []).map((h) => [h.date, h.score]));
-              const days = [];
-              const today = new Date(todayKeyLocal() + "T00:00:00");
-              for (let i = 6; i >= 0; i--) {
-                const d = new Date(today);
-                d.setDate(today.getDate() - i);
-                const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-                  d.getDate()
-                ).padStart(2, "0")}`;
-                days.push({ date: key, score: map.has(key) ? map.get(key) : null });
-              }
-              return days;
-            }, [history]).map((d) => {
+            {last7.map((d) => {
               const s = d.score;
               const h = s === null ? 12 : 10 + s * 6;
               return (
