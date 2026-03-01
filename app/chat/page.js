@@ -13,6 +13,7 @@ export default function ChatPage() {
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
 
+  // Mobile tutor controls
   const [tutorMode, setTutorMode] = useState(true);
   const [pttActive, setPttActive] = useState(false);
 
@@ -55,7 +56,7 @@ export default function ChatPage() {
     setStatus("Connecting...");
 
     try {
-      // 1) Get ephemeral key from your server
+      // 1) Get ephemeral key
       const EPHEMERAL_KEY = await getEphemeralKey();
 
       // 2) Create peer connection
@@ -76,33 +77,72 @@ export default function ChatPage() {
         }
       };
 
-      // Remote audio from model
+      // Remote audio track
       pc.ontrack = (e) => {
         if (remoteAudioRef.current) remoteAudioRef.current.srcObject = e.streams[0];
       };
 
-      // Add local microphone track (we’ll enable only when user holds to talk)
-      // But we still add the transceiver so model audio can come back
+      // We need to receive model audio
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
-      // Data channel
+      // Data channel for events
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
       dc.onopen = () => {
-        // Session config + greeting
+        // ✅ Strong voice control (fix "unknown voice")
         sendJSON({
           type: "session.update",
           session: {
             turn_detection: { type: "server_vad" },
             input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+
+            // voice name
             voice: "alloy",
-            instructions:
-              "You are Amin Sir AI Voice Tutor. Speak simple, friendly Hinglish (mostly English). Ask short questions. Encourage the student. Correct gently.",
+
+            // ✅ lock output format (helps reduce weird/alien phonemes)
+            audio: {
+              output: {
+                voice: "alloy",
+                format: "pcm16",
+              },
+            },
+
+            // ✅ Human-teacher style instructions (very important)
+            instructions: `
+You are "Amin Sir", a friendly Indian English teacher for school students (age 10-16).
+
+Speech rules (VERY IMPORTANT):
+• Speak in clear Indian English accent.
+• Medium speed (not fast).
+• Warm teacher tone, not robotic.
+• Use simple words.
+• Pause slightly between sentences.
+• Never speak in any language other than English.
+
+Teaching behaviour:
+• Start by greeting the student and asking their name.
+• Then ask one small question at a time.
+• Wait for the student answer.
+• If the student makes a mistake, correct politely and explain briefly.
+• Encourage after every reply: "Good try", "Very good", "Nice answer".
+
+Conversation style:
+• Short sentences (max 10 words per sentence)
+• No long speeches
+• No paragraphs
+• Ask → Listen → Respond cycle only
+
+Do NOT switch language.
+Do NOT speak continuously.
+You are a real human teacher, not a robot.
+            `.trim(),
+
             modalities: ["text", "audio"],
           },
         });
 
+        // Greeting message
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -111,16 +151,21 @@ export default function ChatPage() {
             content: [{ type: "input_text", text: "Start with a warm greeting and ask the student's name." }],
           },
         });
-        sendJSON({ type: "response.create" });
+
+        // ✅ Keep responses short (prevents long robotic talk)
+        sendJSON({
+          type: "response.create",
+          response: {
+            max_output_tokens: 120,
+          },
+        });
       };
 
       // 3) Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // ✅ IMPORTANT FIX:
-      // Ephemeral token flow must POST SDP to /v1/realtime/calls (NOT /v1/realtime?model=)
-      // This is exactly what OpenAI WebRTC docs show. :contentReference[oaicite:1]{index=1}
+      // 4) Ephemeral token flow: send offer SDP to /v1/realtime/calls
       const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
         method: "POST",
         headers: {
@@ -182,28 +227,37 @@ export default function ChatPage() {
     }
   }
 
+  // ---- Mic (Push to Talk) ----
   async function startTalking() {
     if (!pcRef.current) throw new Error("Not connected. Click Start Voice first.");
 
     ensureRemoteAudioPlays();
 
+    // If stream already exists, just enable tracks again
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => (t.enabled = true));
       return;
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
       video: false,
     });
 
     localStreamRef.current = stream;
+
+    // Add mic track to connection
     pcRef.current.addTrack(stream.getTracks()[0], stream);
   }
 
   function stopTalking(fullStop = false) {
     try {
       if (!localStreamRef.current) return;
+
       localStreamRef.current.getTracks().forEach((t) => {
         if (fullStop) {
           try {
@@ -213,12 +267,13 @@ export default function ChatPage() {
           t.enabled = false;
         }
       });
+
       if (fullStop) localStreamRef.current = null;
     } catch {}
   }
 
   async function pttStart() {
-    if (!connected) return;
+    if (!connected || !tutorMode) return;
     setPttActive(true);
     setError("");
     try {
@@ -230,10 +285,16 @@ export default function ChatPage() {
   }
 
   function pttStop() {
+    if (!tutorMode) return;
     setPttActive(false);
     try {
       stopTalking(false);
-      sendJSON({ type: "response.create" });
+
+      // ✅ request tutor reply after student stops talking
+      sendJSON({
+        type: "response.create",
+        response: { max_output_tokens: 120 },
+      });
     } catch (e) {
       setErr(e);
     }
@@ -330,10 +391,11 @@ export default function ChatPage() {
           {tutorMode ? "Tutor Mode ✅ (Mobile Optimized)" : "Tutor Mode OFF"}
         </div>
         <div style={{ color: "#444", lineHeight: 1.4 }}>
-          Mobile steps: Tap <b>Start Voice</b> once → then <b>Hold to Talk</b> → release for reply.
+          <b>Mobile steps:</b> Tap <b>Start Voice</b> once → then <b>Hold to Talk</b> → release for reply.
         </div>
       </div>
 
+      {/* Bottom bar */}
       <div
         style={{
           position: "fixed",
@@ -368,22 +430,22 @@ export default function ChatPage() {
         <button
           onTouchStart={(e) => {
             e.preventDefault();
-            if (tutorMode) pttStart();
+            pttStart();
           }}
           onTouchEnd={(e) => {
             e.preventDefault();
-            if (tutorMode) pttStop();
+            pttStop();
           }}
           onMouseDown={(e) => {
             e.preventDefault();
-            if (tutorMode) pttStart();
+            pttStart();
           }}
           onMouseUp={(e) => {
             e.preventDefault();
-            if (tutorMode) pttStop();
+            pttStop();
           }}
           onMouseLeave={() => {
-            if (tutorMode && pttActive) pttStop();
+            if (pttActive) pttStop();
           }}
           disabled={!connected || !tutorMode}
           style={{
@@ -398,7 +460,13 @@ export default function ChatPage() {
             cursor: !connected || !tutorMode ? "not-allowed" : "pointer",
           }}
         >
-          {!connected ? "Connect first" : !tutorMode ? "Tutor OFF" : pttActive ? "Release to Stop" : "Hold to Talk 🎤"}
+          {!connected
+            ? "Connect first"
+            : !tutorMode
+            ? "Tutor OFF"
+            : pttActive
+            ? "Release to Stop"
+            : "Hold to Talk 🎤"}
         </button>
 
         <button
