@@ -8,22 +8,11 @@ function json(data, status = 200) {
   });
 }
 
-/**
- * OPTIONAL POST (keep if you use it elsewhere)
- * Creates an ephemeral token.
- */
+// Keep POST if you use it elsewhere (not required for this flow)
 export async function POST() {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return json({ error: { message: "Missing OPENAI_API_KEY on server" } }, 500);
-
-    const sessionConfig = {
-      session: {
-        type: "realtime",
-        model: "gpt-realtime",
-        audio: { output: { voice: "alloy" } },
-      },
-    };
+    if (!apiKey) return json({ error: { message: "Missing OPENAI_API_KEY" } }, 500);
 
     const r = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
@@ -31,11 +20,16 @@ export async function POST() {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(sessionConfig),
+      body: JSON.stringify({
+        session: {
+          type: "realtime",
+          model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime",
+          audio: { output: { voice: "alloy" } },
+        },
+      }),
     });
 
     const data = await r.json().catch(() => null);
-
     if (!r.ok) {
       return json({ error: { message: data?.error?.message || "Failed to create client secret", raw: data } }, r.status);
     }
@@ -49,22 +43,16 @@ export async function POST() {
   }
 }
 
-/**
- * PUT /api/realtime
- * Browser sends RAW SDP (application/sdp)
- * Server sends multipart FormData to OpenAI /v1/realtime/calls (Unified Interface)
- * Server returns RAW SDP answer (application/sdp)
- */
 export async function PUT(req) {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return json({ error: { message: "Missing OPENAI_API_KEY on server" } }, 500);
+    if (!apiKey) return json({ error: { message: "Missing OPENAI_API_KEY" } }, 500);
 
-    // 1) Read raw SDP offer from browser
+    // 1) Read SDP offer from browser (raw text)
     let offerSdp = (await req.text().catch(() => "")) || "";
     offerSdp = String(offerSdp).trim();
 
-    // Defensive: strip surrounding quotes
+    // Defensive: strip accidental surrounding quotes
     if (
       (offerSdp.startsWith('"') && offerSdp.endsWith('"')) ||
       (offerSdp.startsWith("'") && offerSdp.endsWith("'"))
@@ -74,57 +62,107 @@ export async function PUT(req) {
 
     if (!offerSdp || !offerSdp.startsWith("v=")) {
       return json(
-        { error: { message: "Invalid SDP offer received by server (must start with v=)." } },
+        {
+          error: {
+            message: "Invalid SDP offer received by server (must start with v=).",
+            debug: { length: offerSdp.length, first80: offerSdp.slice(0, 80) },
+          },
+        },
         400
       );
     }
 
-    // 2) Build session config (Unified Interface expects this in the "session" form part)
+    const model = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime";
+
+    // Session config per WebRTC guide (unified interface)
     const sessionConfig = JSON.stringify({
       type: "realtime",
-      model: "gpt-realtime",
+      model,
       audio: { output: { voice: "alloy" } },
     });
 
-    // 3) Send to OpenAI as multipart FormData: sdp + session
-    const fd = new FormData();
-    fd.set("sdp", offerSdp);
-    fd.set("session", sessionConfig);
+    // ---------------------------
+    // Attempt 1: Unified interface
+    // POST /v1/realtime/calls with multipart FormData(sdp, session)
+    // ---------------------------
+    try {
+      const fd = new FormData();
+      fd.set("sdp", offerSdp);
+      fd.set("session", sessionConfig);
 
-    const r = await fetch("https://api.openai.com/v1/realtime/calls", {
+      const r1 = await fetch("https://api.openai.com/v1/realtime/calls", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          // DO NOT set Content-Type for FormData
+        },
+        body: fd,
+      });
+
+      const answer1 = await r1.text().catch(() => "");
+
+      if (r1.ok && answer1.trim().startsWith("v=")) {
+        // Return RAW SDP
+        return new Response(answer1, {
+          status: 200,
+          headers: { "Content-Type": "application/sdp" },
+        });
+      }
+
+      // If not ok, fall through to attempt 2
+      // Keep short debug for you:
+      // console.log("Unified failed", r1.status, answer1.slice(0, 120));
+    } catch {
+      // ignore and try fallback
+    }
+
+    // ---------------------------
+    // Attempt 2: Legacy SDP exchange (fallback)
+    // POST /v1/realtime?model=... with Content-Type: application/sdp
+    // ---------------------------
+    const r2 = await fetch(`https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        // DO NOT set Content-Type manually (fetch will set correct boundary)
+        "Content-Type": "application/sdp",
+        Accept: "application/sdp",
       },
-      body: fd,
+      body: offerSdp,
     });
 
-    const answerText = await r.text().catch(() => "");
+    const answer2 = await r2.text().catch(() => "");
 
-    if (!r.ok) {
-      // try parse JSON error if possible
+    if (!r2.ok) {
+      // Return JSON error so your client shows it clearly
       let parsed = null;
       try {
-        parsed = JSON.parse(answerText);
+        parsed = JSON.parse(answer2);
       } catch {}
-
-      const msg =
-        parsed?.error?.message ||
-        `OpenAI /v1/realtime/calls failed (${r.status}). ${answerText.slice(0, 300)}`;
-
-      return json({ error: { message: msg, raw: parsed || answerText } }, r.status);
+      return json(
+        {
+          error: {
+            message:
+              parsed?.error?.message ||
+              `Realtime SDP exchange failed (${r2.status}).`,
+            raw: parsed || answer2.slice(0, 400),
+          },
+          debug: { model, offerLen: offerSdp.length, offerFirst80: offerSdp.slice(0, 80) },
+        },
+        r2.status
+      );
     }
 
-    // 4) Return RAW SDP answer to browser
-    if (!answerText || !answerText.trim().startsWith("v=")) {
+    if (!answer2 || !answer2.trim().startsWith("v=")) {
       return json(
-        { error: { message: "OpenAI returned invalid/empty SDP answer.", raw: answerText.slice(0, 200) } },
+        {
+          error: { message: "OpenAI returned invalid/empty SDP answer." },
+          debug: { model, offerLen: offerSdp.length, answerFirst200: answer2.slice(0, 200) },
+        },
         500
       );
     }
 
-    return new Response(answerText, {
+    return new Response(answer2, {
       status: 200,
       headers: { "Content-Type": "application/sdp" },
     });
