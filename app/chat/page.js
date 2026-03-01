@@ -5,6 +5,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const LS_KEY = "aminsir_progress_v5";
 const VOICE = "onyx"; // male voice
 
+// ✅ Feature A: Continuous auto follow-up
+const FOLLOWUP_SILENCE_MS = 12000; // 12 sec after AI finishes
+const MAX_FOLLOWUPS_PER_SESSION = 6;
+const FOLLOWUP_COOLDOWN_MS = 15000;
+
 function todayKeyLocal() {
   const d = new Date();
   const y = d.getFullYear();
@@ -67,8 +72,10 @@ function levelToText(level) {
 }
 
 function levelProfile(level) {
-  if (level === "advanced") return { vocab: "moderate to high", questions: "opinion + story + reasons", correction: "more strict" };
-  if (level === "medium") return { vocab: "simple to moderate", questions: "mix easy + open ended", correction: "balanced" };
+  if (level === "advanced")
+    return { vocab: "moderate to high", questions: "opinion + story + reasons", correction: "more strict" };
+  if (level === "medium")
+    return { vocab: "simple to moderate", questions: "mix easy + open ended", correction: "balanced" };
   return { vocab: "very simple", questions: "very easy daily-life", correction: "gentle" };
 }
 
@@ -92,6 +99,12 @@ export default function ChatPage() {
   const reportTextRef = useRef("");
   const reportResolveRef = useRef(null);
   const reportTimeoutRef = useRef(null);
+
+  // ✅ Feature A refs
+  const followupTimerRef = useRef(null);
+  const followupCountRef = useRef(0);
+  const lastFollowupAtRef = useRef(0);
+  const studentSpeakingRef = useRef(false);
 
   const [status, setStatus] = useState("Idle");
   const [step, setStep] = useState("—");
@@ -169,6 +182,58 @@ export default function ChatPage() {
     dc.send(JSON.stringify(obj));
   }
 
+  // ✅ Feature A helpers
+  function clearFollowupTimer() {
+    if (followupTimerRef.current) {
+      clearTimeout(followupTimerRef.current);
+      followupTimerRef.current = null;
+    }
+  }
+
+  function canSendFollowup() {
+    const now = Date.now();
+    if (!connected) return false;
+    if (!dcOpen) return false;
+    if (stoppingRef.current) return false;
+    if (followupCountRef.current >= MAX_FOLLOWUPS_PER_SESSION) return false;
+    if (studentSpeakingRef.current) return false;
+    if (now - lastFollowupAtRef.current < FOLLOWUP_COOLDOWN_MS) return false;
+    return true;
+  }
+
+  function scheduleFollowup(reason = "after_ai_done") {
+    clearFollowupTimer();
+    if (!canSendFollowup()) return;
+
+    followupTimerRef.current = setTimeout(() => {
+      if (!canSendFollowup()) return;
+
+      followupCountRef.current += 1;
+      lastFollowupAtRef.current = Date.now();
+
+      sendJSON({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Student is silent. In AUDIO, give a gentle follow-up (1–2 lines), tiny hint, and ask the SAME question again.
+Level=${levelToText(level)}. Hinglish 80/20. Motivating. Reason=${reason}.
+End with: "Your turn—answer in 1 line."`,
+            },
+          ],
+        },
+      });
+
+      sendJSON({
+        type: "response.create",
+        response: { modalities: ["audio"], max_output_tokens: 140 },
+      });
+    }, FOLLOWUP_SILENCE_MS);
+  }
+
   async function getEphemeralKey() {
     setStep("Fetching key…");
     const r = await fetch("/api/realtime", { method: "POST" });
@@ -235,6 +300,21 @@ export default function ChatPage() {
         return;
       }
 
+      // ✅ Feature A: detect student speaking (server VAD events)
+      if (msg?.type === "input_audio_buffer.speech_started") {
+        studentSpeakingRef.current = true;
+        clearFollowupTimer();
+      }
+      if (msg?.type === "input_audio_buffer.speech_stopped") {
+        studentSpeakingRef.current = false;
+      }
+
+      // ✅ When AI finishes, schedule follow-up if student silent
+      if (msg?.type === "response.done" || msg?.type === "response.completed") {
+        scheduleFollowup("after_ai_done");
+      }
+
+      // Existing report capture logic
       if (stoppingRef.current) {
         const t = extractAnyText(msg);
         if (t) reportTextRef.current += t;
@@ -278,6 +358,7 @@ LEVEL: ${levelToText(selectedLevel)}
 Conversation:
 • One question at a time.
 • Keep student talking (ask follow-up).
+• If student becomes silent after you finish, gently prompt again with a small hint.
 • Do NOT give scores during conversation.
 Always respond in AUDIO.
 `.trim();
@@ -299,6 +380,12 @@ Always respond in AUDIO.
     setConnected(false);
 
     greetedRef.current = false; // reset greeting flag for new session
+
+    // ✅ reset Feature A counters for new session
+    followupCountRef.current = 0;
+    lastFollowupAtRef.current = 0;
+    studentSpeakingRef.current = false;
+    clearFollowupTimer();
 
     try {
       const key = await getEphemeralKey();
@@ -416,6 +503,9 @@ Aapka naam kya hai? What is your name?"`,
   }
 
   function stopAllImmediate() {
+    // ✅ stop follow-up timer
+    clearFollowupTimer();
+
     setStep("Closing…");
     setStatus("Closing…");
 
@@ -470,6 +560,9 @@ Aapka naam kya hai? What is your name?"`,
   }
 
   async function stopWithReport() {
+    // ✅ stop follow-up timer
+    clearFollowupTimer();
+
     setError("");
     setReportLoading(true);
     setScoreCard(null);
@@ -703,7 +796,9 @@ Keep it short.
           <div style={{ marginTop: 10, fontWeight: 800 }}>Generating score…</div>
         ) : scoreCard ? (
           scoreCard.score === null ? (
-            <div style={{ marginTop: 10, fontWeight: 800, color: "#b91c1c" }}>{scoreCard.raw || "Report not received."}</div>
+            <div style={{ marginTop: 10, fontWeight: 800, color: "#b91c1c" }}>
+              {scoreCard.raw || "Report not received."}
+            </div>
           ) : (
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
               <div style={{ display: "flex", gap: 12, alignItems: "center", padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
@@ -764,6 +859,10 @@ Keep it short.
                 </div>
               );
             })}
+          </div>
+
+          <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+            ✅ Auto follow-up ON: If student stays silent after AI finishes, Amin Sir prompts again after ~12 seconds.
           </div>
         </div>
       </div>
