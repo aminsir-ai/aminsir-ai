@@ -55,10 +55,8 @@ export default function ChatPage() {
     setStatus("Connecting...");
 
     try {
-      // 1) Get ephemeral key
       const EPHEMERAL_KEY = await getEphemeralKey();
 
-      // 2) Create peer connection
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
@@ -76,15 +74,12 @@ export default function ChatPage() {
         }
       };
 
-      // remote audio
       pc.ontrack = (e) => {
         if (remoteAudioRef.current) remoteAudioRef.current.srcObject = e.streams[0];
       };
 
-      // Add audio transceiver so we can receive model audio
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
-      // Data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
@@ -112,17 +107,17 @@ export default function ChatPage() {
         sendJSON({ type: "response.create" });
       };
 
-      // 3) Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 4) Send SDP offer DIRECTLY to OpenAI using the EPHEMERAL key (browser → OpenAI)
+      // ✅ IMPORTANT FIX: add openai-beta header here too
       const sdpResponse = await fetch("https://api.openai.com/v1/realtime?model=gpt-realtime", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${EPHEMERAL_KEY}`,
           "Content-Type": "application/sdp",
           Accept: "application/sdp",
+          "openai-beta": "realtime=v1",
         },
         body: offer.sdp,
       });
@@ -130,10 +125,10 @@ export default function ChatPage() {
       const answerSdp = await sdpResponse.text().catch(() => "");
 
       if (!sdpResponse.ok) {
-        throw new Error("OpenAI SDP exchange failed:\n" + answerSdp.slice(0, 600));
+        throw new Error("OpenAI SDP exchange failed:\n" + answerSdp.slice(0, 800));
       }
       if (!answerSdp.trim().startsWith("v=")) {
-        throw new Error("Invalid answer SDP from OpenAI:\n" + answerSdp.slice(0, 600));
+        throw new Error("Invalid answer SDP from OpenAI:\n" + answerSdp.slice(0, 800));
       }
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
@@ -156,11 +151,15 @@ export default function ChatPage() {
       stopTalking(true);
 
       if (dcRef.current) {
-        try { dcRef.current.close(); } catch {}
+        try {
+          dcRef.current.close();
+        } catch {}
         dcRef.current = null;
       }
       if (pcRef.current) {
-        try { pcRef.current.close(); } catch {}
+        try {
+          pcRef.current.close();
+        } catch {}
         pcRef.current = null;
       }
 
@@ -189,8 +188,6 @@ export default function ChatPage() {
     });
 
     localStreamRef.current = stream;
-
-    // Add mic track
     pcRef.current.addTrack(stream.getTracks()[0], stream);
   }
 
@@ -199,7 +196,9 @@ export default function ChatPage() {
       if (!localStreamRef.current) return;
       localStreamRef.current.getTracks().forEach((t) => {
         if (fullStop) {
-          try { t.stop(); } catch {}
+          try {
+            t.stop();
+          } catch {}
         } else {
           t.enabled = false;
         }
@@ -232,7 +231,9 @@ export default function ChatPage() {
 
   useEffect(() => {
     return () => {
-      try { disconnectRealtime(); } catch {}
+      try {
+        disconnectRealtime();
+      } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -355,11 +356,25 @@ export default function ChatPage() {
         </button>
 
         <button
-          onTouchStart={(e) => { e.preventDefault(); if (tutorMode) pttStart(); }}
-          onTouchEnd={(e) => { e.preventDefault(); if (tutorMode) pttStop(); }}
-          onMouseDown={(e) => { e.preventDefault(); if (tutorMode) pttStart(); }}
-          onMouseUp={(e) => { e.preventDefault(); if (tutorMode) pttStop(); }}
-          onMouseLeave={() => { if (tutorMode && pttActive) pttStop(); }}
+          onTouchStart={(e) => {
+            e.preventDefault();
+            if (tutorMode) pttStart();
+          }}
+          onTouchEnd={(e) => {
+            e.preventDefault();
+            if (tutorMode) pttStop();
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            if (tutorMode) pttStart();
+          }}
+          onMouseUp={(e) => {
+            e.preventDefault();
+            if (tutorMode) pttStop();
+          }}
+          onMouseLeave={() => {
+            if (tutorMode && pttActive) pttStop();
+          }}
           disabled={!connected || !tutorMode}
           style={{
             flex: 1,
@@ -377,7 +392,11 @@ export default function ChatPage() {
         </button>
 
         <button
-          onClick={() => { try { if (pttActive) pttStop(); } catch {} }}
+          onClick={() => {
+            try {
+              if (pttActive) pttStop();
+            } catch {}
+          }}
           style={{
             padding: "10px 12px",
             borderRadius: 12,

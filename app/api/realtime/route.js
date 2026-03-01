@@ -19,6 +19,8 @@ export async function POST() {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        // ✅ IMPORTANT FIX:
+        "openai-beta": "realtime=v1",
       },
       body: JSON.stringify({
         session: {
