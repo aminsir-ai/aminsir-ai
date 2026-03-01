@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-/** ---------------- Auth (from Supabase students-table login page) ---------------- */
+/** ---------------- Auth ---------------- */
 const AUTH_KEY = "aminsir_auth_v1";
 function getAuthUser() {
   try {
@@ -22,15 +22,15 @@ const LS_KEY_BASE = "aminsir_progress_v5";
 const USAGE_KEY_BASE = "aminsir_daily_usage_v1";
 
 /** ---------------- Voice config ---------------- */
-const VOICE = "onyx"; // male voice
+const VOICE = "onyx";
 
-/** ---------------- Feature A: Continuous auto follow-up ---------------- */
-// ✅ TEMP TEST: 6 seconds (easy to confirm). Later we will set back to 12 seconds.
-const FOLLOWUP_SILENCE_MS = 6000; // 6 sec after AI finishes speaking
+/** ---------------- Feature A: Auto follow-up ---------------- */
+// ✅ keep 6 sec for testing; after confirmed we will set back to 12 sec
+const FOLLOWUP_SILENCE_MS = 6000;
 const MAX_FOLLOWUPS_PER_SESSION = 6;
 const FOLLOWUP_COOLDOWN_MS = 15000;
 
-/** ---------------- Feature C: Daily usage limit (minutes) ---------------- */
+/** ---------------- Feature C: Daily usage limit ---------------- */
 const DAILY_LIMIT_MINUTES = 10;
 
 /** ---------------- Helpers ---------------- */
@@ -89,7 +89,6 @@ export default function ChatPage() {
   const [LS_KEY, setLS_KEY] = useState(null);
   const [USAGE_KEY, setUSAGE_KEY] = useState(null);
 
-  /** Login protection */
   useEffect(() => {
     const u = getAuthUser();
     if (!u) {
@@ -109,7 +108,7 @@ export default function ChatPage() {
     router.replace("/login");
   }
 
-  /** Storage helpers (per user) */
+  /** storage helpers */
   function loadProgress() {
     try {
       if (!LS_KEY) return { streak: 0, lastDay: null, history: [], level: "beginner" };
@@ -172,8 +171,6 @@ export default function ChatPage() {
   // prevent double start + greeting repeat
   const startLockRef = useRef(false);
   const greetedRef = useRef(false);
-
-  // connected ref (important for finally block)
   const connectedRef = useRef(false);
 
   // Report capture
@@ -182,16 +179,19 @@ export default function ChatPage() {
   const reportResolveRef = useRef(null);
   const reportTimeoutRef = useRef(null);
 
-  // Feature A refs
+  /** ---------------- Feature A refs ---------------- */
   const followupTimerRef = useRef(null);
   const followupCountRef = useRef(0);
   const lastFollowupAtRef = useRef(0);
   const studentSpeakingRef = useRef(false);
 
+  // ✅ NEW: remember if AI finished speaking and we are waiting for student
+  const waitingForStudentRef = useRef(false);
+
   // prevent double schedule from multiple audio-end events
   const lastAiFinishedAtRef = useRef(0);
 
-  // Feature C refs
+  /** ---------------- Feature C refs ---------------- */
   const sessionStartRef = useRef(null);
   const sessionTimerRef = useRef(null);
   const usedTodayRef = useRef(0);
@@ -214,7 +214,6 @@ export default function ChatPage() {
   const [history, setHistory] = useState([]);
   const [level, setLevel] = useState("beginner");
 
-  /** Load progress when LS_KEY is ready */
   useEffect(() => {
     if (!LS_KEY) return;
     const p = loadProgress();
@@ -277,7 +276,7 @@ export default function ChatPage() {
     dc.send(JSON.stringify(obj));
   }
 
-  /** -------- Feature A helpers -------- */
+  /** ---------------- Feature A helpers ---------------- */
   function clearFollowupTimer() {
     if (followupTimerRef.current) {
       clearTimeout(followupTimerRef.current);
@@ -291,6 +290,7 @@ export default function ChatPage() {
     if (!dcOpen) return false;
     if (stoppingRef.current) return false;
     if (limitTriggeredRef.current) return false;
+    if (!waitingForStudentRef.current) return false; // ✅ only after AI finished
     if (followupCountRef.current >= MAX_FOLLOWUPS_PER_SESSION) return false;
     if (studentSpeakingRef.current) return false;
     if (now - lastFollowupAtRef.current < FOLLOWUP_COOLDOWN_MS) return false;
@@ -329,12 +329,16 @@ End with: "Your turn—answer in 1 line."`,
 
   function markAiFinishedAndSchedule(reason) {
     const now = Date.now();
-    if (now - lastAiFinishedAtRef.current < 800) return; // prevent double schedule
+    if (now - lastAiFinishedAtRef.current < 800) return;
     lastAiFinishedAtRef.current = now;
+
+    // ✅ AI finished speaking → now we wait for student response
+    waitingForStudentRef.current = true;
+
     scheduleFollowup(reason);
   }
 
-  /** -------- Feature C helpers -------- */
+  /** ---------------- Daily timer helpers ---------------- */
   function stopSessionTimer() {
     if (!sessionStartRef.current) return;
 
@@ -398,12 +402,11 @@ End with: "Your turn—answer in 1 line."`,
       const total = usedTodayRef.current + elapsed;
 
       setStep(`Today usage: ${Math.min(total, DAILY_LIMIT_MINUTES).toFixed(1)} / ${DAILY_LIMIT_MINUTES} min`);
-
       if (total >= DAILY_LIMIT_MINUTES) handleDailyLimitReached();
     }, 5000);
   }
 
-  /** -------- Realtime helpers -------- */
+  /** ---------------- Realtime helpers ---------------- */
   async function getEphemeralKey() {
     setStep("Fetching key…");
     const r = await fetch("/api/realtime", { method: "POST" });
@@ -470,16 +473,23 @@ End with: "Your turn—answer in 1 line."`,
         return;
       }
 
-      // Student speaking detection
+      // Student speaking started -> clear follow-up timer
       if (msg?.type === "input_audio_buffer.speech_started") {
         studentSpeakingRef.current = true;
         clearFollowupTimer();
       }
+
+      // ✅ Student stopped speaking -> if we are waiting for student, restart follow-up timer
       if (msg?.type === "input_audio_buffer.speech_stopped") {
         studentSpeakingRef.current = false;
+
+        // If AI already finished and student went silent again, restart timer now
+        if (waitingForStudentRef.current) {
+          scheduleFollowup("student_speech_stopped");
+        }
       }
 
-      // ✅ Auto follow-up trigger when AI finishes speaking
+      // ✅ AI finished speaking -> start follow-up timer
       if (
         msg?.type === "output_audio_buffer.stopped" ||
         msg?.type === "response.audio.done" ||
@@ -519,10 +529,7 @@ LANGUAGE MIX (MUST):
 • Hindi only for quick help/explanation. Keep Hindi very simple.
 
 ANTI-REPEAT (VERY IMPORTANT):
-• Never repeat the same greeting again.
 • Greet only once per session.
-• Do not say "Hello beta I am Amin Sir" again after the first greeting.
-• If you already greeted, immediately ask a NEW question.
 
 LEVEL: ${levelToText(selectedLevel)}
 • Vocabulary: ${prof.vocab}
@@ -533,7 +540,6 @@ Conversation:
 • One question at a time.
 • Keep student talking (ask follow-up).
 • If student becomes silent after you finish, gently prompt again with a small hint.
-• Do NOT give scores during conversation.
 Always respond in AUDIO.
 `.trim();
   }
@@ -561,17 +567,18 @@ Always respond in AUDIO.
 
     greetedRef.current = false;
 
-    // reset follow-up
+    // reset feature A
     followupCountRef.current = 0;
     lastFollowupAtRef.current = 0;
     studentSpeakingRef.current = false;
     lastAiFinishedAtRef.current = 0;
+    waitingForStudentRef.current = false;
     clearFollowupTimer();
 
-    // reset limit
+    // reset limit trigger
     limitTriggeredRef.current = false;
 
-    // load usage
+    // load today's usage
     usedTodayRef.current = getTodayUsage();
     if (usedTodayRef.current >= DAILY_LIMIT_MINUTES) {
       setStatus("Daily limit reached");
@@ -651,9 +658,9 @@ Always respond in AUDIO.
               content: [
                 {
                   type: "input_text",
-                  text: `Say in AUDIO at normal teacher speed (not slow):
+                  text: `Say in AUDIO at normal teacher speed:
 "Hello ${user}! Welcome beta. I am Amin Sir. Level is ${levelToText(level)}.
-Ready? Tell me one sentence about your day."`,
+Tell me one sentence about your day."`,
                 },
               ],
             },
@@ -704,6 +711,7 @@ Ready? Tell me one sentence about your day."`,
   function stopAllImmediate() {
     clearFollowupTimer();
     stopSessionTimer();
+    waitingForStudentRef.current = false;
 
     setStep("Closing…");
     setStatus("Closing…");
@@ -762,6 +770,7 @@ Ready? Tell me one sentence about your day."`,
   async function stopWithReport() {
     clearFollowupTimer();
     stopSessionTimer();
+    waitingForStudentRef.current = false;
 
     setError("");
     setReportLoading(true);
@@ -893,9 +902,7 @@ Keep it short.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!user) {
-    return <div style={{ padding: 18, fontFamily: "system-ui, Arial" }}>Loading…</div>;
-  }
+  if (!user) return <div style={{ padding: 18, fontFamily: "system-ui, Arial" }}>Loading…</div>;
 
   return (
     <div style={{ maxWidth: 860, margin: "0 auto", padding: 16, paddingBottom: 50 }}>
@@ -912,32 +919,53 @@ Keep it short.
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontWeight: 900 }}>Level:</div>
-        <select value={level} onChange={(e) => persistLevel(e.target.value)} style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 800 }}>
+        <select
+          value={level}
+          onChange={(e) => persistLevel(e.target.value)}
+          style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 800 }}
+        >
           <option value="beginner">Beginner</option>
           <option value="medium">Medium</option>
           <option value="advanced">Advanced</option>
         </select>
-        <div style={{ marginLeft: "auto", fontWeight: 900 }}>🔥 Streak: {streak} day{streak === 1 ? "" : "s"}</div>
+        <div style={{ marginLeft: "auto", fontWeight: 900 }}>
+          🔥 Streak: {streak} day{streak === 1 ? "" : "s"}
+        </div>
       </div>
 
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Status: {status}</div>
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Step: {step}</div>
       <div style={{ fontWeight: 800, marginBottom: 12 }}>
-        DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound: {soundEnabled ? "Enabled ✅" : "Locked"} | Mic: {micOn ? "On ✅" : "Off"}
+        DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound:{" "}
+        {soundEnabled ? "Enabled ✅" : "Locked"} | Mic: {micOn ? "On ✅" : "Off"}
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <button
           onClick={startVoice}
           disabled={startLockRef.current && !connected}
-          style={{ padding: "10px 14px", borderRadius: 12, border: "none", background: "#111", color: "#fff", fontWeight: 900, opacity: startLockRef.current && !connected ? 0.6 : 1 }}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "none",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 900,
+            opacity: startLockRef.current && !connected ? 0.6 : 1,
+          }}
         >
           Start Voice 🎤
         </button>
 
         <button
           onClick={enableSoundStrong}
-          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: soundEnabled ? "#eaffea" : "#fff", fontWeight: 900 }}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: soundEnabled ? "#eaffea" : "#fff",
+            fontWeight: 900,
+          }}
         >
           Enable Sound 🔊 {soundEnabled ? "✅" : ""}
         </button>
@@ -945,14 +973,31 @@ Keep it short.
         <button
           onClick={stopWithReport}
           disabled={!connected || reportLoading}
-          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: !connected || reportLoading ? "#f3f4f6" : "#fff", fontWeight: 900, opacity: !connected || reportLoading ? 0.6 : 1 }}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: !connected || reportLoading ? "#f3f4f6" : "#fff",
+            fontWeight: 900,
+            opacity: !connected || reportLoading ? 0.6 : 1,
+          }}
         >
           Stop ⛔ (Score Card)
         </button>
       </div>
 
       {error ? (
-        <pre style={{ marginTop: 12, padding: 12, borderRadius: 12, background: "#fff1f2", border: "1px solid #fecdd3", color: "#7f1d1d", whiteSpace: "pre-wrap" }}>
+        <pre
+          style={{
+            marginTop: 12,
+            padding: 12,
+            borderRadius: 12,
+            background: "#fff1f2",
+            border: "1px solid #fecdd3",
+            color: "#7f1d1d",
+            whiteSpace: "pre-wrap",
+          }}
+        >
           {error}
         </pre>
       ) : null}
@@ -1014,7 +1059,15 @@ Keep it short.
                 <div key={d.date} style={{ textAlign: "center" }}>
                   <div
                     title={s === null ? `${d.date}: no practice` : `${d.date}: ${s}/10`}
-                    style={{ height: 74, border: "1px solid #eee", borderRadius: 10, display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 6 }}
+                    style={{
+                      height: 74,
+                      border: "1px solid #eee",
+                      borderRadius: 10,
+                      display: "flex",
+                      alignItems: "flex-end",
+                      justifyContent: "center",
+                      padding: 6,
+                    }}
                   >
                     <div style={{ width: "100%", height: h, borderRadius: 8, background: s === null ? "#ddd" : "#111" }} />
                   </div>
@@ -1025,7 +1078,7 @@ Keep it short.
           </div>
 
           <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-            ✅ Auto follow-up TEST (6s) • 🔐 Daily limit ON • 👤 Per-user progress saved (Supabase students table login)
+            ✅ Auto follow-up FIXED (restarts after speech_stopped) • 🔐 Daily limit ON • 👤 Login required
           </div>
         </div>
       </div>
