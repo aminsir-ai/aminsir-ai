@@ -2,28 +2,29 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_KEY = "aminsir_progress_v1"; // local storage key
+const LS_KEY = "aminsir_progress_v2"; // local storage key
 
 function todayKeyLocal() {
   const d = new Date();
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`; // local day
+  return `${y}-${m}-${day}`;
 }
 
 function loadProgress() {
   try {
     const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return { streak: 0, lastDay: null, history: [] };
+    if (!raw) return { streak: 0, lastDay: null, history: [], level: "beginner" };
     const parsed = JSON.parse(raw);
     return {
       streak: Number(parsed?.streak || 0),
       lastDay: parsed?.lastDay || null,
       history: Array.isArray(parsed?.history) ? parsed.history : [],
+      level: parsed?.level || "beginner",
     };
   } catch {
-    return { streak: 0, lastDay: null, history: [] };
+    return { streak: 0, lastDay: null, history: [], level: "beginner" };
   }
 }
 
@@ -36,16 +37,11 @@ function saveProgress(p) {
 function computeNewStreak(prevLastDay, prevStreak) {
   const today = todayKeyLocal();
   if (!prevLastDay) return { streak: 1, lastDay: today };
+  if (prevLastDay === today) return { streak: prevStreak || 1, lastDay: today };
 
-  if (prevLastDay === today) {
-    return { streak: prevStreak || 1, lastDay: today };
-  }
-
-  // check if prevLastDay is yesterday (local)
   const prev = new Date(prevLastDay + "T00:00:00");
   const now = new Date(today + "T00:00:00");
   const diffDays = Math.round((now - prev) / (24 * 60 * 60 * 1000));
-
   if (diffDays === 1) return { streak: (prevStreak || 0) + 1, lastDay: today };
   return { streak: 1, lastDay: today };
 }
@@ -61,6 +57,38 @@ function scoreLabel(score) {
   if (score >= 7) return "Very Good!";
   if (score >= 5) return "Good Start!";
   return "Keep Practicing!";
+}
+
+function levelToText(level) {
+  if (level === "advanced") return "Advanced";
+  if (level === "medium") return "Medium";
+  return "Beginner";
+}
+
+function levelProfile(level) {
+  // Controls question complexity + correction strictness
+  if (level === "advanced") {
+    return {
+      vocab: "moderate to high",
+      sentence: "medium length",
+      questions: "open-ended, opinion based",
+      correction: "more strict",
+    };
+  }
+  if (level === "medium") {
+    return {
+      vocab: "simple to moderate",
+      sentence: "short to medium",
+      questions: "mix of short + some open-ended",
+      correction: "balanced",
+    };
+  }
+  return {
+    vocab: "very simple",
+    sentence: "very short",
+    questions: "very easy daily-life",
+    correction: "gentle and minimal",
+  };
 }
 
 export default function ChatPage() {
@@ -87,17 +115,25 @@ export default function ChatPage() {
 
   const [reportLoading, setReportLoading] = useState(false);
 
-  // score card state
+  // Score card state
   const [scoreCard, setScoreCard] = useState(null); // { score, grammar, tip, summary, date }
   const [streak, setStreak] = useState(0);
   const [history, setHistory] = useState([]); // [{date, score}]
+  const [level, setLevel] = useState("beginner");
 
   useEffect(() => {
-    // Load local progress on mount
     const p = loadProgress();
     setStreak(p.streak || 0);
     setHistory(p.history || []);
+    setLevel(p.level || "beginner");
   }, []);
+
+  function persistLevel(newLevel) {
+    setLevel(newLevel);
+    const prev = loadProgress();
+    const next = { ...prev, level: newLevel };
+    saveProgress(next);
+  }
 
   function setErr(e) {
     const msg = typeof e === "string" ? e : e?.message || JSON.stringify(e, null, 2);
@@ -166,7 +202,6 @@ export default function ChatPage() {
         const msg = JSON.parse(ev.data);
         if (!stoppingRef.current) return;
 
-        // Collect text deltas (be flexible with event shapes)
         const delta =
           msg?.delta ||
           msg?.text?.delta ||
@@ -177,17 +212,47 @@ export default function ChatPage() {
           reportTextRef.current += delta;
         }
 
-        // Resolve on completion event
         if (msg?.type === "response.completed" || msg?.type === "response.done") {
           if (typeof reportResolveRef.current === "function") {
             reportResolveRef.current();
             reportResolveRef.current = null;
           }
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     };
+  }
+
+  function buildTutorInstructions(selectedLevel) {
+    const prof = levelProfile(selectedLevel);
+
+    return `
+You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
+
+Language & speed rules (VERY IMPORTANT):
+• Speak like a real teacher: slow pace, clear pronunciation.
+• Use short pauses. Short sentences.
+• Use 80% English + 20% very simple Hindi (Hinglish).
+• Do NOT use difficult Hindi words. Use simple Hindi only for explanation.
+Example style:
+"Good! Very nice. Ab ek aur question. Tell me about your school."
+
+Level: ${levelToText(selectedLevel)}
+Level settings:
+• Vocabulary: ${prof.vocab}
+• Sentence length: ${prof.sentence}
+• Question style: ${prof.questions}
+• Correction style: ${prof.correction}
+
+Conversation rules:
+• One question at a time.
+• Always keep the conversation going.
+• Ask daily life questions (school, friends, hobbies, food, games).
+• Encourage the student: "Good!", "Nice try!", "Very good!", "Try again".
+• Correct gently using simple examples.
+• Do NOT give scores during conversation.
+
+Always respond in AUDIO.
+`.trim();
   }
 
   async function startVoice() {
@@ -239,6 +304,7 @@ export default function ChatPage() {
       dc.onopen = async () => {
         setDcOpen(true);
 
+        // Apply session + level instructions
         sendJSON({
           type: "session.update",
           session: {
@@ -246,26 +312,13 @@ export default function ChatPage() {
             voice: "alloy",
             audio: { output: { voice: "alloy", format: "pcm16" } },
             turn_detection: { type: "server_vad" },
-            instructions: `
-You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
-
-Conversation rules:
-• Speak slowly and clearly.
-• Use very simple English.
-• One question at a time.
-• Always keep the conversation going.
-• Ask daily life questions (school, friends, hobbies, food, games).
-
-Important:
-• Do NOT give score during conversation.
-• Only teach and correct gently.
-Always respond in AUDIO.
-            `.trim(),
+            instructions: buildTutorInstructions(level),
           },
         });
 
         await new Promise((r) => setTimeout(r, 200));
 
+        // Greeting: includes level mention softly
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -275,7 +328,9 @@ Always respond in AUDIO.
               {
                 type: "input_text",
                 text:
-                  'Say exactly in AUDIO: "Hello beta! I am Amin Sir, your English speaking teacher. What is your name?"',
+                  `Say exactly in AUDIO: "Hello beta! I am Amin Sir. We will practice English speaking. Your level is ${levelToText(
+                    level
+                  )}. What is your name?"`,
               },
             ],
           },
@@ -283,7 +338,7 @@ Always respond in AUDIO.
 
         sendJSON({
           type: "response.create",
-          response: { modalities: ["audio"], max_output_tokens: 140 },
+          response: { modalities: ["audio"], max_output_tokens: 160 },
         });
 
         enableSoundNonBlocking();
@@ -374,7 +429,7 @@ Always respond in AUDIO.
     setReportLoading(true);
     setScoreCard(null);
 
-    setStep("Stopping & generating report…");
+    setStep("Stopping & generating score…");
     setStatus("Evaluating…");
     stoppingRef.current = true;
 
@@ -392,13 +447,14 @@ Always respond in AUDIO.
         reportResolveRef.current = resolve;
       });
 
-      // 7 second timeout
       reportTimeoutRef.current = setTimeout(() => {
         if (typeof reportResolveRef.current === "function") {
           reportResolveRef.current();
           reportResolveRef.current = null;
         }
       }, 7000);
+
+      const prof = levelProfile(level);
 
       sendJSON({
         type: "conversation.item.create",
@@ -414,12 +470,17 @@ Give a FINAL evaluation for today's speaking session.
 Return STRICT JSON only (no extra text), exactly:
 {
   "score": 0-10,
-  "grammar": "one correction in simple English",
-  "tip": "one improvement tip",
-  "summary": "one short encouraging line"
+  "grammar": "one correction in simple English + small Hindi help (80/20)",
+  "tip": "one improvement tip in simple English + small Hindi help (80/20)",
+  "summary": "one short encouraging line (80/20)",
+  "level": "${levelToText(level)}"
 }
 
-Be honest but positive. Keep it simple.
+Rules:
+• Speak for ${levelToText(level)} level.
+• Vocabulary: ${prof.vocab}
+• Sentence length: ${prof.sentence}
+• Keep it friendly.
               `.trim(),
             },
           ],
@@ -428,7 +489,7 @@ Be honest but positive. Keep it simple.
 
       sendJSON({
         type: "response.create",
-        response: { modalities: ["text"], max_output_tokens: 220 },
+        response: { modalities: ["text"], max_output_tokens: 260 },
       });
 
       await donePromise;
@@ -456,12 +517,11 @@ Be honest but positive. Keep it simple.
 
       const card =
         score !== null
-          ? { score, grammar, tip, summary, date: today }
+          ? { score, grammar, tip, summary, date: today, level: levelToText(level) }
           : { score: null, grammar: "", tip: "", summary: "", date: today, raw: raw || "Report not received." };
 
       setScoreCard(card);
 
-      // Update streak + history in localStorage
       const prev = loadProgress();
       const s = computeNewStreak(prev.lastDay, prev.streak);
 
@@ -472,7 +532,7 @@ Be honest but positive. Keep it simple.
         .sort((a, b) => (a.date > b.date ? 1 : -1))
         .slice(-7);
 
-      const next = { streak: s.streak, lastDay: s.lastDay, history: newHistory };
+      const next = { ...prev, streak: s.streak, lastDay: s.lastDay, history: newHistory, level };
       saveProgress(next);
 
       setStreak(next.streak);
@@ -506,8 +566,24 @@ Be honest but positive. Keep it simple.
   }, []);
 
   return (
-    <div style={{ maxWidth: 820, margin: "0 auto", padding: 16, paddingBottom: 50 }}>
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: 16, paddingBottom: 50 }}>
       <h2 style={{ margin: "8px 0 8px" }}>Amin Sir AI Tutor</h2>
+
+      {/* Level selector */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontWeight: 900 }}>Level:</div>
+        <select
+          value={level}
+          onChange={(e) => persistLevel(e.target.value)}
+          style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 800 }}
+        >
+          <option value="beginner">Beginner</option>
+          <option value="medium">Medium</option>
+          <option value="advanced">Advanced</option>
+        </select>
+
+        <div style={{ marginLeft: "auto", fontWeight: 900 }}>🔥 Streak: {streak} day{streak === 1 ? "" : "s"}</div>
+      </div>
 
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Status: {status}</div>
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Step: {step}</div>
@@ -519,42 +595,23 @@ Be honest but positive. Keep it simple.
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <button
           onClick={startVoice}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "none",
-            background: "#111",
-            color: "#fff",
-            fontWeight: 900,
-          }}
+          style={{ padding: "10px 14px", borderRadius: 12, border: "none", background: "#111", color: "#fff", fontWeight: 900 }}
         >
           Start Voice 🎤
         </button>
 
         <button
           onClick={enableSoundNonBlocking}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "1px solid #ddd",
-            background: "#fff",
-            fontWeight: 900,
-          }}
+          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", fontWeight: 900 }}
         >
           Enable Sound 🔊
         </button>
 
         <button
           onClick={stopWithReport}
-          style={{
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "1px solid #ddd",
-            background: "#fff",
-            fontWeight: 900,
-          }}
+          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", fontWeight: 900 }}
         >
-          Stop ⛔ (Show Score)
+          Stop ⛔ (Score Card)
         </button>
       </div>
 
@@ -580,7 +637,7 @@ Be honest but positive. Keep it simple.
       <div style={{ marginTop: 16, padding: 14, border: "1px solid #eee", borderRadius: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
           <div style={{ fontWeight: 900, fontSize: 16 }}>🏆 Today’s Score Card</div>
-          <div style={{ fontWeight: 900 }}>🔥 Streak: {streak} day{streak === 1 ? "" : "s"}</div>
+          <div style={{ fontWeight: 900 }}>Level: {levelToText(level)}</div>
         </div>
 
         {reportLoading ? (
@@ -590,16 +647,7 @@ Be honest but positive. Keep it simple.
             <pre style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{scoreCard.raw || "No report."}</pre>
           ) : (
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 12,
-                  alignItems: "center",
-                  padding: 12,
-                  borderRadius: 14,
-                  border: "1px solid #eee",
-                }}
-              >
+              <div style={{ display: "flex", gap: 12, alignItems: "center", padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
                 <div style={{ fontSize: 38, lineHeight: "40px" }}>🏆</div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 900, fontSize: 22 }}>
@@ -637,7 +685,7 @@ Be honest but positive. Keep it simple.
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
             {last7.map((d) => {
               const s = d.score;
-              const h = s === null ? 12 : 10 + s * 6; // height 12..70
+              const h = s === null ? 12 : 10 + s * 6;
               return (
                 <div key={d.date} style={{ textAlign: "center" }}>
                   <div
@@ -652,14 +700,7 @@ Be honest but positive. Keep it simple.
                       padding: 6,
                     }}
                   >
-                    <div
-                      style={{
-                        width: "100%",
-                        height: h,
-                        borderRadius: 8,
-                        background: s === null ? "#ddd" : "#111",
-                      }}
-                    />
+                    <div style={{ width: "100%", height: h, borderRadius: 8, background: s === null ? "#ddd" : "#111" }} />
                   </div>
                   <div style={{ fontSize: 11, marginTop: 4, color: "#555" }}>{d.date.slice(5)}</div>
                 </div>
