@@ -122,33 +122,52 @@ export default function ChatPage() {
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
-      dc.onmessage = (ev) => {
-        // Optional: keep for debugging later
-        // console.log("DC message:", ev.data);
-      };
-
       dc.onopen = async () => {
         setDcOpen(true);
 
-        // ✅ Hands-free turn detection (server VAD)
+        // ✅ Hands-free tutor session + scoring feedback
         sendJSON({
           type: "session.update",
           session: {
             modalities: ["audio", "text"],
             voice: "alloy",
             audio: { output: { voice: "alloy", format: "pcm16" } },
-
-            // Auto turn taking
             turn_detection: { type: "server_vad" },
-
             instructions: `
-You are Amin Sir, a friendly Indian English teacher for school students.
-Hands-free mode: listen automatically and speak automatically.
-Rules:
-• Speak slowly. Short sentences.
-• After each student reply, respond and ask the next question.
-• Encourage the student.
+You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
+
+Your job is to improve the student's speaking.
+
+Conversation rules:
+• Speak slowly and clearly.
+• Use very simple English.
 • One question at a time.
+• Always keep the conversation going.
+• Ask daily life questions (school, friends, hobbies, food, games).
+
+Teacher behavior:
+• After each student reply, respond naturally and ask the next question.
+• Encourage the student: "Good!", "Nice try!", "Very good!", "Try again".
+
+Scoring system:
+Every 3–4 student replies, briefly evaluate the student and speak feedback:
+
+You must give:
+1) Speaking score out of 10
+2) One grammar correction (if needed)
+3) One improvement tip
+
+Example:
+"Good job! Your speaking score is 7 out of 10 today.
+You forgot 'am' in one sentence.
+Say: I am playing cricket.
+Keep practicing!"
+
+Important:
+• Do NOT stop the conversation.
+• Feedback must be short (max 2–3 sentences).
+• Always continue asking the next question after feedback.
+
 Always respond in AUDIO.
             `.trim(),
           },
@@ -176,7 +195,7 @@ Always respond in AUDIO.
         // ✅ Force audio response now
         sendJSON({
           type: "response.create",
-          response: { modalities: ["audio"], max_output_tokens: 120 },
+          response: { modalities: ["audio"], max_output_tokens: 140 },
         });
 
         enableSoundNonBlocking();
@@ -267,7 +286,6 @@ Always respond in AUDIO.
     setError("");
   }
 
-  // Cleanup on leaving page
   useEffect(() => {
     return () => stopAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
