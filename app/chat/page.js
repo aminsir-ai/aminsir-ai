@@ -8,15 +8,11 @@ export default function ChatPage() {
 
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
-  const remoteStreamRef = useRef(null);
-
-  const sendersRef = useRef([]);
 
   const [status, setStatus] = useState("Idle");
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
 
-  // Mobile tutor controls
   const [tutorMode, setTutorMode] = useState(true);
   const [pttActive, setPttActive] = useState(false);
 
@@ -24,16 +20,6 @@ export default function ChatPage() {
     const msg = typeof e === "string" ? e : e?.message || JSON.stringify(e, null, 2);
     console.error(e);
     setError(msg);
-  }
-
-  function sendJSON(obj) {
-    try {
-      const dc = dcRef.current;
-      if (!dc || dc.readyState !== "open") return;
-      dc.send(JSON.stringify(obj));
-    } catch (e) {
-      console.error("sendJSON failed", e);
-    }
   }
 
   function ensureRemoteAudioPlays() {
@@ -46,31 +32,37 @@ export default function ChatPage() {
     } catch {}
   }
 
+  function sendJSON(obj) {
+    try {
+      const dc = dcRef.current;
+      if (!dc || dc.readyState !== "open") return;
+      dc.send(JSON.stringify(obj));
+    } catch (e) {
+      console.error("sendJSON failed", e);
+    }
+  }
+
+  async function getEphemeralKey() {
+    const r = await fetch("/api/realtime", { method: "POST" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data, null, 2));
+    if (!data?.value) throw new Error("Ephemeral key missing from /api/realtime");
+    return data.value;
+  }
+
   async function connectRealtime() {
     setError("");
     setStatus("Connecting...");
 
     try {
-      // 1) Create PeerConnection
+      // 1) Get ephemeral key
+      const EPHEMERAL_KEY = await getEphemeralKey();
+
+      // 2) Create peer connection
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
       pcRef.current = pc;
-
-      remoteStreamRef.current = new MediaStream();
-
-      pc.ontrack = (event) => {
-        try {
-          if (event.track?.kind === "audio") {
-            remoteStreamRef.current.addTrack(event.track);
-            if (remoteAudioRef.current) {
-              remoteAudioRef.current.srcObject = remoteStreamRef.current;
-            }
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      };
 
       pc.onconnectionstatechange = () => {
         const s = pc.connectionState;
@@ -78,18 +70,25 @@ export default function ChatPage() {
           setConnected(true);
           setStatus("Connected ✅");
           setError("");
-        } else if (s === "disconnected" || s === "failed" || s === "closed") {
+        } else if (s === "failed" || s === "disconnected" || s === "closed") {
           setConnected(false);
           setStatus(s === "closed" ? "Closed" : `Connection: ${s}`);
         }
       };
 
-      // 2) Data channel
+      // remote audio
+      pc.ontrack = (e) => {
+        if (remoteAudioRef.current) remoteAudioRef.current.srcObject = e.streams[0];
+      };
+
+      // Add audio transceiver so we can receive model audio
+      pc.addTransceiver("audio", { direction: "sendrecv" });
+
+      // Data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
       dc.onopen = () => {
-        // Configure session (via data channel events)
         sendJSON({
           type: "session.update",
           session: {
@@ -102,7 +101,6 @@ export default function ChatPage() {
           },
         });
 
-        // Greeting
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -114,43 +112,34 @@ export default function ChatPage() {
         sendJSON({ type: "response.create" });
       };
 
-      dc.onerror = (e) => console.error("DataChannel error", e);
-
-      // Receive audio from model
-      pc.addTransceiver("audio", { direction: "sendrecv" });
-
       // 3) Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // ✅ Send RAW SDP to server
-      const sdpResponse = await fetch("/api/realtime", {
-        method: "PUT",
-        headers: { "Content-Type": "application/sdp" },
+      // 4) Send SDP offer DIRECTLY to OpenAI using the EPHEMERAL key (browser → OpenAI)
+      const sdpResponse = await fetch("https://api.openai.com/v1/realtime?model=gpt-realtime", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${EPHEMERAL_KEY}`,
+          "Content-Type": "application/sdp",
+          Accept: "application/sdp",
+        },
         body: offer.sdp,
       });
 
-      const answerText = await sdpResponse.text().catch(() => "");
+      const answerSdp = await sdpResponse.text().catch(() => "");
 
       if (!sdpResponse.ok) {
-        throw new Error(
-          "PUT /api/realtime failed:\n" + (answerText ? answerText.slice(0, 600) : "no response text")
-        );
+        throw new Error("OpenAI SDP exchange failed:\n" + answerSdp.slice(0, 600));
+      }
+      if (!answerSdp.trim().startsWith("v=")) {
+        throw new Error("Invalid answer SDP from OpenAI:\n" + answerSdp.slice(0, 600));
       }
 
-      // ✅ DEBUG: show exact server output if not SDP
-      if (!answerText || !answerText.trim().startsWith("v=")) {
-        throw new Error(
-          "Invalid answer SDP returned from server. Server said:\n" + answerText.slice(0, 600)
-        );
-      }
-
-      await pc.setRemoteDescription({ type: "answer", sdp: answerText });
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
       setStatus("Connected ✅");
       setConnected(true);
-      setError("");
-
       ensureRemoteAudioPlays();
     } catch (e) {
       setConnected(false);
@@ -167,20 +156,14 @@ export default function ChatPage() {
       stopTalking(true);
 
       if (dcRef.current) {
-        try {
-          dcRef.current.close();
-        } catch {}
+        try { dcRef.current.close(); } catch {}
         dcRef.current = null;
       }
-
       if (pcRef.current) {
-        try {
-          pcRef.current.close();
-        } catch {}
+        try { pcRef.current.close(); } catch {}
         pcRef.current = null;
       }
 
-      remoteStreamRef.current = null;
       if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
 
       setConnected(false);
@@ -190,7 +173,6 @@ export default function ChatPage() {
     }
   }
 
-  // ---- Mic (push-to-talk) ----
   async function startTalking() {
     if (!pcRef.current) throw new Error("Not connected. Click Start Voice first.");
 
@@ -202,54 +184,28 @@ export default function ChatPage() {
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
     });
 
     localStreamRef.current = stream;
 
-    const pc = pcRef.current;
-    const senders = [];
-    for (const track of stream.getTracks()) {
-      const sender = pc.addTrack(track, stream);
-      senders.push(sender);
-    }
-    sendersRef.current = senders;
+    // Add mic track
+    pcRef.current.addTrack(stream.getTracks()[0], stream);
   }
 
   function stopTalking(fullStop = false) {
     try {
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((t) => {
-          if (fullStop) {
-            try {
-              t.stop();
-            } catch {}
-          } else {
-            t.enabled = false;
-          }
-        });
-      }
-
-      if (fullStop) {
-        localStreamRef.current = null;
-
-        if (pcRef.current && sendersRef.current.length) {
-          for (const s of sendersRef.current) {
-            try {
-              pcRef.current.removeTrack(s);
-            } catch {}
-          }
+      if (!localStreamRef.current) return;
+      localStreamRef.current.getTracks().forEach((t) => {
+        if (fullStop) {
+          try { t.stop(); } catch {}
+        } else {
+          t.enabled = false;
         }
-        sendersRef.current = [];
-      }
-    } catch (e) {
-      console.error(e);
-    }
+      });
+      if (fullStop) localStreamRef.current = null;
+    } catch {}
   }
 
   async function pttStart() {
@@ -276,9 +232,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     return () => {
-      try {
-        disconnectRealtime();
-      } catch {}
+      try { disconnectRealtime(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -365,23 +319,10 @@ export default function ChatPage() {
           {tutorMode ? "Tutor Mode ✅ (Mobile Optimized)" : "Tutor Mode OFF"}
         </div>
         <div style={{ color: "#444", lineHeight: 1.4 }}>
-          {tutorMode ? (
-            <>
-              <div style={{ marginBottom: 6 }}>
-                <b>Mobile steps:</b> Tap <b>Start Voice</b> once → then <b>Hold to Talk</b> → release for reply.
-              </div>
-              <div>
-                Tip: First tap unlocks audio on mobile. If you don’t hear the tutor, press <b>Hold to Talk</b> once and
-                release.
-              </div>
-            </>
-          ) : (
-            <div>You can still connect voice, but tutor controls are disabled.</div>
-          )}
+          Mobile steps: Tap <b>Start Voice</b> once → then <b>Hold to Talk</b> → release for reply.
         </div>
       </div>
 
-      {/* Bottom bar */}
       <div
         style={{
           position: "fixed",
@@ -414,30 +355,11 @@ export default function ChatPage() {
         </button>
 
         <button
-          onTouchStart={(e) => {
-            e.preventDefault();
-            if (!tutorMode) return;
-            pttStart();
-          }}
-          onTouchEnd={(e) => {
-            e.preventDefault();
-            if (!tutorMode) return;
-            pttStop();
-          }}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            if (!tutorMode) return;
-            pttStart();
-          }}
-          onMouseUp={(e) => {
-            e.preventDefault();
-            if (!tutorMode) return;
-            pttStop();
-          }}
-          onMouseLeave={() => {
-            if (!tutorMode) return;
-            if (pttActive) pttStop();
-          }}
+          onTouchStart={(e) => { e.preventDefault(); if (tutorMode) pttStart(); }}
+          onTouchEnd={(e) => { e.preventDefault(); if (tutorMode) pttStop(); }}
+          onMouseDown={(e) => { e.preventDefault(); if (tutorMode) pttStart(); }}
+          onMouseUp={(e) => { e.preventDefault(); if (tutorMode) pttStop(); }}
+          onMouseLeave={() => { if (tutorMode && pttActive) pttStop(); }}
           disabled={!connected || !tutorMode}
           style={{
             flex: 1,
@@ -455,11 +377,7 @@ export default function ChatPage() {
         </button>
 
         <button
-          onClick={() => {
-            try {
-              if (pttActive) pttStop();
-            } catch {}
-          }}
+          onClick={() => { try { if (pttActive) pttStop(); } catch {} }}
           style={{
             padding: "10px 12px",
             borderRadius: 12,
