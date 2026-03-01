@@ -1,79 +1,157 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+
+const AUTH_KEY = "aminsir_auth_v1";
+
+// ✅ Add / edit students here (username: "4-digit PIN")
+const ALLOWED_USERS = {
+  ali: "1111",
+  rahul: "2222",
+  fatima: "3333",
+  // add more...
+};
+
+function normalizeName(s) {
+  return (s || "").trim().toLowerCase();
+}
 
 export default function LoginPage() {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
 
-  function onSubmit(e) {
-    e.preventDefault();
-    setErr("");
+  const [username, setUsername] = useState("");
+  const [pin, setPin] = useState("");
+  const [showPin, setShowPin] = useState(false);
+  const [error, setError] = useState("");
 
-    const clean = name.trim();
-    if (!clean) {
-      setErr("Please enter your name");
-      return;
-    }
+  const allowedListText = useMemo(() => Object.keys(ALLOWED_USERS).join(", "), []);
 
-    setLoading(true);
-
-    // Backup: store name locally too
+  useEffect(() => {
+    // If already logged in, go to chat
     try {
-      localStorage.setItem("studentName", clean);
+      const raw = localStorage.getItem(AUTH_KEY);
+      if (raw) router.replace("/chat");
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function login() {
+    setError("");
+
+    const u = normalizeName(username);
+    const p = (pin || "").trim();
+
+    if (!u) return setError("Please enter username.");
+    if (!/^\d{4}$/.test(p)) return setError("PIN must be 4 digits.");
+
+    const expected = ALLOWED_USERS[u];
+    if (!expected) return setError(`Username not found. Allowed: ${allowedListText || "—"}`);
+    if (p !== expected) return setError("Wrong PIN. Try again.");
+
+    const auth = { user: u, at: Date.now() };
+    try {
+      localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
     } catch {}
 
-    // Send name to chat via URL
-    router.push(`/chat?name=${encodeURIComponent(clean)}`);
+    router.replace("/chat");
   }
 
   return (
-    <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
-      <div style={{ width: "100%", maxWidth: 420, border: "1px solid #e5e7eb", borderRadius: 16, padding: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>Amin Sir AI Tutor</h1>
-        <p style={{ marginTop: 0, marginBottom: 18, color: "#6b7280" }}>
-          Enter your name to start English speaking practice.
-        </p>
+    <div style={{ maxWidth: 520, margin: "0 auto", padding: 18, fontFamily: "system-ui, Arial" }}>
+      <h2 style={{ margin: "8px 0" }}>Amin Sir AI Tutor — Login</h2>
 
-        <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
-          <label style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 14, color: "#374151" }}>Student Name</span>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Ali"
-              style={{
-                padding: "12px 12px",
-                borderRadius: 12,
-                border: "1px solid #d1d5db",
-                outline: "none",
-                fontSize: 16,
-              }}
-            />
-          </label>
-
-          {err ? <div style={{ color: "#b91c1c", fontSize: 14 }}>{err}</div> : null}
-
-          <button
-            type="submit"
-            disabled={loading}
+      <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+        <label style={{ display: "grid", gap: 6 }}>
+          <span style={{ fontWeight: 800 }}>Username</span>
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Example: ali"
             style={{
               padding: "12px 12px",
               borderRadius: 12,
-              border: "none",
-              fontSize: 16,
+              border: "1px solid #ddd",
               fontWeight: 700,
-              cursor: loading ? "not-allowed" : "pointer",
-              opacity: loading ? 0.7 : 1,
+              fontSize: 16,
+            }}
+          />
+        </label>
+
+        <label style={{ display: "grid", gap: 6 }}>
+          <span style={{ fontWeight: 800 }}>4-digit PIN</span>
+          <div style={{ display: "flex", gap: 10 }}>
+            <input
+              value={pin}
+              onChange={(e) => setPin(e.target.value.replace(/[^\d]/g, "").slice(0, 4))}
+              placeholder="****"
+              inputMode="numeric"
+              type={showPin ? "text" : "password"}
+              style={{
+                flex: 1,
+                padding: "12px 12px",
+                borderRadius: 12,
+                border: "1px solid #ddd",
+                fontWeight: 800,
+                letterSpacing: 3,
+                fontSize: 16,
+              }}
+            />
+            <button
+              onClick={() => setShowPin((v) => !v)}
+              type="button"
+              style={{
+                padding: "12px 12px",
+                borderRadius: 12,
+                border: "1px solid #ddd",
+                background: "#fff",
+                fontWeight: 900,
+              }}
+            >
+              {showPin ? "Hide" : "Show"}
+            </button>
+          </div>
+        </label>
+
+        <button
+          onClick={login}
+          style={{
+            padding: "12px 14px",
+            borderRadius: 12,
+            border: "none",
+            background: "#111",
+            color: "#fff",
+            fontWeight: 900,
+            fontSize: 16,
+          }}
+        >
+          Login
+        </button>
+
+        {error ? (
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 12,
+              border: "1px solid #fecdd3",
+              background: "#fff1f2",
+              color: "#7f1d1d",
+              fontWeight: 700,
             }}
           >
-            {loading ? "Starting..." : "Start"}
-          </button>
-        </form>
+            {error}
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
+          <div style={{ fontWeight: 800, marginBottom: 4 }}>How to login:</div>
+          <div>• Enter your username (small letters).</div>
+          <div>• Enter 4-digit PIN.</div>
+          <div style={{ marginTop: 8 }}>
+            Admin note: Add students inside <b>ALLOWED_USERS</b> in this file.
+          </div>
+        </div>
       </div>
-    </main>
+    </div>
   );
 }
