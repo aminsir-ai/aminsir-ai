@@ -10,6 +10,10 @@ const FOLLOWUP_SILENCE_MS = 12000; // 12 sec after AI finishes
 const MAX_FOLLOWUPS_PER_SESSION = 6;
 const FOLLOWUP_COOLDOWN_MS = 15000;
 
+// ✅ Feature C (Step-1): Daily usage tracking (10-minute system)
+const DAILY_LIMIT_MINUTES = 10;
+const USAGE_KEY = "aminsir_daily_usage_v1";
+
 function todayKeyLocal() {
   const d = new Date();
   const y = d.getFullYear();
@@ -105,6 +109,11 @@ export default function ChatPage() {
   const followupCountRef = useRef(0);
   const lastFollowupAtRef = useRef(0);
   const studentSpeakingRef = useRef(false);
+
+  // ✅ Feature C Step-1 refs (timer)
+  const sessionStartRef = useRef(null);
+  const sessionTimerRef = useRef(null);
+  const usedTodayRef = useRef(0);
 
   const [status, setStatus] = useState("Idle");
   const [step, setStep] = useState("—");
@@ -232,6 +241,62 @@ End with: "Your turn—answer in 1 line."`,
         response: { modalities: ["audio"], max_output_tokens: 140 },
       });
     }, FOLLOWUP_SILENCE_MS);
+  }
+
+  // ✅ Feature C Step-1: Daily usage helper functions
+  function getTodayUsage() {
+    try {
+      const raw = localStorage.getItem(USAGE_KEY);
+      if (!raw) return 0;
+      const data = JSON.parse(raw);
+      const today = todayKeyLocal();
+      return Number(data?.[today] || 0);
+    } catch {
+      return 0;
+    }
+  }
+
+  function saveTodayUsage(minutes) {
+    try {
+      const raw = localStorage.getItem(USAGE_KEY);
+      const data = raw ? JSON.parse(raw) : {};
+      const today = todayKeyLocal();
+      data[today] = minutes;
+      localStorage.setItem(USAGE_KEY, JSON.stringify(data));
+    } catch {}
+  }
+
+  function startSessionTimer() {
+    if (sessionTimerRef.current) return; // already running
+    sessionStartRef.current = Date.now();
+
+    sessionTimerRef.current = setInterval(() => {
+      if (!sessionStartRef.current) return;
+      const elapsed = (Date.now() - sessionStartRef.current) / 60000;
+      const total = usedTodayRef.current + elapsed;
+
+      // show usage in Step line (debug)
+      setStep((prev) => {
+        // keep existing step info if you want; but we show usage for clarity
+        return `Today usage: ${total.toFixed(1)} / ${DAILY_LIMIT_MINUTES} min`;
+      });
+    }, 5000);
+  }
+
+  function stopSessionTimer() {
+    if (!sessionStartRef.current) return;
+
+    const elapsed = (Date.now() - sessionStartRef.current) / 60000;
+    usedTodayRef.current += elapsed;
+
+    saveTodayUsage(usedTodayRef.current);
+
+    sessionStartRef.current = null;
+
+    if (sessionTimerRef.current) {
+      clearInterval(sessionTimerRef.current);
+      sessionTimerRef.current = null;
+    }
   }
 
   async function getEphemeralKey() {
@@ -387,6 +452,9 @@ Always respond in AUDIO.
     studentSpeakingRef.current = false;
     clearFollowupTimer();
 
+    // ✅ Feature C Step-1: load today's usage
+    usedTodayRef.current = getTodayUsage();
+
     try {
       const key = await getEphemeralKey();
 
@@ -396,9 +464,17 @@ Always respond in AUDIO.
       });
       pcRef.current = pc;
 
+      // ✅ Start timer when connected; stop when disconnected/closed
       pc.onconnectionstatechange = () => {
         setStatus(`PC: ${pc.connectionState}`);
-        setConnected(pc.connectionState === "connected");
+
+        if (pc.connectionState === "connected") {
+          setConnected(true);
+          startSessionTimer();
+        } else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") {
+          stopSessionTimer();
+          setConnected(false);
+        }
       };
 
       pc.ontrack = (e) => {
@@ -489,22 +565,21 @@ Aapka naam kya hai? What is your name?"`,
       setStep("Applying answer…");
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
 
-      setStep("Connected ✅ (Tap Enable Sound once)");
+      setStep(`Connected ✅ (Tap Enable Sound once)`);
       setStatus("Connected ✅");
       setConnected(true);
     } catch (e) {
       setStatus("Error");
       setErr(e);
     } finally {
-      // allow start again only when session is closed by user
-      // keep lock if connected; unlock if failed
       if (!connected) startLockRef.current = false;
     }
   }
 
   function stopAllImmediate() {
-    // ✅ stop follow-up timer
+    // ✅ Stop timers
     clearFollowupTimer();
+    stopSessionTimer();
 
     setStep("Closing…");
     setStatus("Closing…");
@@ -560,8 +635,9 @@ Aapka naam kya hai? What is your name?"`,
   }
 
   async function stopWithReport() {
-    // ✅ stop follow-up timer
+    // ✅ Stop timers first
     clearFollowupTimer();
+    stopSessionTimer();
 
     setError("");
     setReportLoading(true);
@@ -796,9 +872,7 @@ Keep it short.
           <div style={{ marginTop: 10, fontWeight: 800 }}>Generating score…</div>
         ) : scoreCard ? (
           scoreCard.score === null ? (
-            <div style={{ marginTop: 10, fontWeight: 800, color: "#b91c1c" }}>
-              {scoreCard.raw || "Report not received."}
-            </div>
+            <div style={{ marginTop: 10, fontWeight: 800, color: "#b91c1c" }}>{scoreCard.raw || "Report not received."}</div>
           ) : (
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
               <div style={{ display: "flex", gap: 12, alignItems: "center", padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
@@ -863,6 +937,8 @@ Keep it short.
 
           <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
             ✅ Auto follow-up ON: If student stays silent after AI finishes, Amin Sir prompts again after ~12 seconds.
+            <br />
+            ⏱ Daily usage tracking ON: Step line shows "Today usage: X / 10 min" (limit stop will be next step).
           </div>
         </div>
       </div>
