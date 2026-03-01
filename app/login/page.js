@@ -46,7 +46,7 @@ export default function LoginPage() {
     if (!/^\d{4}$/.test(p)) return setError("PIN must be 4 digits.");
 
     const expected = ALLOWED_USERS[u];
-    if (!expected) return setError(`Username not found. Allowed: ${allowedListText || "—"}`);
+    if (!expected) return setError(`Username not found.`);
     if (p !== expected) return setError("Wrong PIN. Try again.");
 
     const auth = { user: u, at: Date.now() };
@@ -145,11 +145,8 @@ export default function LoginPage() {
 
         <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
           <div style={{ fontWeight: 800, marginBottom: 4 }}>How to login:</div>
-          <div>• Enter your username (small letters).</div>
-          <div>• Enter 4-digit PIN.</div>
-          <div style={{ marginTop: 8 }}>
-            Admin note: Add students inside <b>ALLOWED_USERS</b> in this file.
-          </div>
+          <div>• Username small letters (example: ali)</div>
+          <div>• PIN must be 4 digits</div>
         </div>
       </div>
     </div>
