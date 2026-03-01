@@ -5,17 +5,16 @@ import { useEffect, useRef, useState } from "react";
 export default function ChatPage() {
   const pcRef = useRef(null);
   const dcRef = useRef(null);
-
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
 
   const [status, setStatus] = useState("Idle");
+  const [step, setStep] = useState("—");
   const [error, setError] = useState("");
 
   const [connected, setConnected] = useState(false);
   const [dcOpen, setDcOpen] = useState(false);
   const [gotRemoteTrack, setGotRemoteTrack] = useState(false);
-
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const [pttActive, setPttActive] = useState(false);
 
@@ -25,46 +24,30 @@ export default function ChatPage() {
     setError(msg);
   }
 
-  function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
-
-  // Strong audio unlock for mobile browsers
   async function unlockAudio() {
     const el = remoteAudioRef.current;
     if (!el) return false;
-
     try {
       el.muted = false;
       el.volume = 1;
-
-      // Try to play immediately (must be in user gesture)
       const p = el.play?.();
-      if (p && typeof p.then === "function") {
-        await p;
-      }
-
+      if (p && typeof p.then === "function") await p;
       setAudioUnlocked(true);
       return true;
     } catch (e) {
-      // If blocked, we keep "Enable Sound" button visible
-      console.warn("Audio unlock blocked:", e);
       setAudioUnlocked(false);
       return false;
     }
   }
 
   function sendJSON(obj) {
-    try {
-      const dc = dcRef.current;
-      if (!dc || dc.readyState !== "open") return;
-      dc.send(JSON.stringify(obj));
-    } catch (e) {
-      console.error("sendJSON failed", e);
-    }
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== "open") return;
+    dc.send(JSON.stringify(obj));
   }
 
   async function getEphemeralKey() {
+    setStep("Fetching ephemeral key…");
     const r = await fetch("/api/realtime", { method: "POST" });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data, null, 2));
@@ -72,45 +55,51 @@ export default function ChatPage() {
     return data.value;
   }
 
-  async function startMicWarmup() {
-    if (localStreamRef.current) return;
+  async function ensureMicTrack(pc) {
+    setStep("Requesting microphone permission…");
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
-
-    localStreamRef.current = stream;
-
-    if (pcRef.current) {
-      pcRef.current.addTrack(stream.getTracks()[0], stream);
+    if (!localStreamRef.current) {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      localStreamRef.current = stream;
     }
 
-    // Enable for a moment then disable (helps VAD + iOS)
-    stream.getTracks().forEach((t) => (t.enabled = true));
-    setTimeout(() => {
-      try {
-        stream.getTracks().forEach((t) => (t.enabled = false));
-      } catch {}
-    }, 900);
+    setStep("Adding microphone track…");
+    const stream = localStreamRef.current;
+    const track = stream.getAudioTracks()[0];
+    if (!track) throw new Error("No audio track from mic");
+
+    // Add track only once
+    const senders = pc.getSenders?.() || [];
+    const already = senders.some((s) => s?.track && s.track.kind === "audio");
+    if (!already) {
+      pc.addTrack(track, stream);
+    }
+
+    // Default OFF (PTT will enable)
+    track.enabled = false;
   }
 
   async function connectRealtime() {
     setError("");
-    setStatus("Connecting...");
+    setStatus("Connecting…");
+    setStep("Starting…");
     setDcOpen(false);
     setGotRemoteTrack(false);
 
     try {
-      // IMPORTANT: this function is called by user click -> perfect time to unlock audio
+      // Must be user gesture -> unlock audio here
       await unlockAudio();
 
       const EPHEMERAL_KEY = await getEphemeralKey();
 
+      setStep("Creating RTCPeerConnection…");
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
@@ -128,41 +117,27 @@ export default function ChatPage() {
       };
 
       pc.ontrack = async (e) => {
-        try {
-          setGotRemoteTrack(true);
-
-          const el = remoteAudioRef.current;
-          if (el) {
-            el.srcObject = e.streams[0];
-            // Try play again when track arrives
-            await unlockAudio();
-          }
-        } catch (err) {
-          console.warn("ontrack play error:", err);
+        setGotRemoteTrack(true);
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = e.streams[0];
+          await unlockAudio();
         }
       };
 
-      // Receive model audio
+      // IMPORTANT: add audio transceiver + mic track BEFORE offer (mobile fix)
+      setStep("Adding audio transceiver…");
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
-      // Data channel
+      await ensureMicTrack(pc);
+
+      setStep("Creating DataChannel…");
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
-      dc.onopen = async () => {
+      dc.onopen = () => {
         setDcOpen(true);
 
-        // Warm up mic (helps iOS / VAD)
-        try {
-          await startMicWarmup();
-        } catch (e) {
-          console.warn("Mic warmup failed:", e);
-        }
-
-        // Give a tiny moment to stabilize
-        await sleep(200);
-
-        // Session update (teacher mode)
+        // configure session
         sendJSON({
           type: "session.update",
           session: {
@@ -172,22 +147,14 @@ export default function ChatPage() {
             audio: { output: { voice: "alloy", format: "pcm16" } },
             instructions: `
 You are Amin Sir, a friendly Indian English teacher for school students.
-
-Rules:
-• Speak slow and clear English.
-• Short sentences only.
-• One question at a time.
-• Encourage: "Good try", "Very good", "Nice answer".
-• Wait for the student reply.
-Do NOT speak long paragraphs.
+Speak slow and clear English. Short sentences. One question at a time.
+Encourage after every reply. Wait for student. Do not speak long paragraphs.
             `.trim(),
             modalities: ["text", "audio"],
           },
         });
 
-        await sleep(150);
-
-        // Force exact first sentence
+        // greeting
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -203,23 +170,23 @@ Do NOT speak long paragraphs.
           },
         });
 
-        // Speak now
         sendJSON({
           type: "response.create",
           response: { modalities: ["audio"], max_output_tokens: 80 },
         });
-
-        // Try play again
-        await sleep(200);
-        await unlockAudio();
       };
 
-      dc.onerror = (e) => console.warn("DataChannel error", e);
-
-      // Offer/Answer with OpenAI
+      // Create offer AFTER mic track exists
+      setStep("Creating offer…");
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
+      const sdp = offer?.sdp || "";
+      if (!sdp.trim().startsWith("v=")) {
+        throw new Error("Offer SDP invalid/empty on mobile. Mic track not attached properly.");
+      }
+
+      setStep("Sending SDP to OpenAI…");
       const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
         method: "POST",
         headers: {
@@ -227,19 +194,20 @@ Do NOT speak long paragraphs.
           "Content-Type": "application/sdp",
           Accept: "application/sdp",
         },
-        body: offer.sdp,
+        body: sdp,
       });
 
       const answerSdp = await sdpResponse.text().catch(() => "");
       if (!sdpResponse.ok) throw new Error(answerSdp || `SDP exchange failed (${sdpResponse.status})`);
-      if (!answerSdp.trim().startsWith("v=")) throw new Error("Invalid answer SDP:\n" + answerSdp.slice(0, 400));
+      if (!answerSdp.trim().startsWith("v=")) throw new Error("Invalid answer SDP:\n" + answerSdp.slice(0, 300));
 
+      setStep("Applying remote description…");
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
+      setStep("Done ✅");
       setConnected(true);
       setStatus("Connected ✅");
     } catch (e) {
-      setConnected(false);
       setStatus("Error");
       setErr(e);
     }
@@ -255,55 +223,46 @@ Do NOT speak long paragraphs.
         });
         localStreamRef.current = null;
       }
-
       if (dcRef.current) {
         try {
           dcRef.current.close();
         } catch {}
         dcRef.current = null;
       }
-
       if (pcRef.current) {
         try {
           pcRef.current.close();
         } catch {}
         pcRef.current = null;
       }
-
       if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
 
       setConnected(false);
       setDcOpen(false);
       setGotRemoteTrack(false);
       setStatus("Closed");
-    } catch (e) {
-      setErr(e);
-    }
+      setStep("—");
+    } catch {}
   }
 
   async function pttStart() {
     if (!connected) return;
     setPttActive(true);
     setError("");
+    await unlockAudio();
 
-    try {
-      await unlockAudio();
-      if (!localStreamRef.current) await startMicWarmup();
-      localStreamRef.current?.getTracks()?.forEach((t) => (t.enabled = true));
-    } catch (e) {
-      setPttActive(false);
-      setErr(e);
-    }
+    const stream = localStreamRef.current;
+    const track = stream?.getAudioTracks?.()?.[0];
+    if (track) track.enabled = true;
   }
 
   function pttStop() {
     setPttActive(false);
-    try {
-      localStreamRef.current?.getTracks()?.forEach((t) => (t.enabled = false));
-      sendJSON({ type: "response.create", response: { max_output_tokens: 120 } });
-    } catch (e) {
-      setErr(e);
-    }
+    const stream = localStreamRef.current;
+    const track = stream?.getAudioTracks?.()?.[0];
+    if (track) track.enabled = false;
+
+    sendJSON({ type: "response.create", response: { max_output_tokens: 120 } });
   }
 
   useEffect(() => {
@@ -317,7 +276,7 @@ Do NOT speak long paragraphs.
 
   return (
     <div style={{ maxWidth: 760, margin: "0 auto", padding: 16, paddingBottom: 120 }}>
-      <h2 style={{ margin: "8px 0 10px" }}>Welcome, Amin sir 👋</h2>
+      <h2 style={{ margin: "8px 0 10px" }}>Amin Sir AI Tutor</h2>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div
@@ -326,14 +285,19 @@ Do NOT speak long paragraphs.
             borderRadius: 12,
             border: "1px solid #eee",
             background: connected ? "#ecfdf5" : "#fff7ed",
-            fontWeight: 800,
+            fontWeight: 900,
           }}
         >
           Status: {status}
         </div>
 
-        <div style={{ fontWeight: 700, color: "#333" }}>
-          DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"}
+        <div style={{ fontWeight: 700 }}>
+          Step: {step}
+        </div>
+
+        <div style={{ fontWeight: 700 }}>
+          DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound:{" "}
+          {audioUnlocked ? "Enabled ✅" : "Locked"}
         </div>
       </div>
 
@@ -348,7 +312,6 @@ Do NOT speak long paragraphs.
               background: "#111",
               color: "#fff",
               fontWeight: 900,
-              cursor: "pointer",
             }}
           >
             Start Voice 🎤
@@ -361,16 +324,13 @@ Do NOT speak long paragraphs.
               borderRadius: 12,
               border: "1px solid #ddd",
               background: "#fff",
-              color: "#111",
               fontWeight: 900,
-              cursor: "pointer",
             }}
           >
             Stop
           </button>
         )}
 
-        {/* Audio unlock button (mobile fix) */}
         <button
           onClick={unlockAudio}
           style={{
@@ -379,7 +339,6 @@ Do NOT speak long paragraphs.
             border: "1px solid #ddd",
             background: audioUnlocked ? "#ecfdf5" : "#fff",
             fontWeight: 900,
-            cursor: "pointer",
           }}
         >
           {audioUnlocked ? "Sound Enabled ✅" : "Enable Sound 🔊"}
@@ -395,7 +354,6 @@ Do NOT speak long paragraphs.
             background: "#fff1f2",
             border: "1px solid #fecdd3",
             color: "#7f1d1d",
-            overflowX: "auto",
             whiteSpace: "pre-wrap",
           }}
         >
@@ -405,7 +363,7 @@ Do NOT speak long paragraphs.
 
       <audio ref={remoteAudioRef} autoPlay playsInline controls style={{ width: "100%", marginTop: 12 }} />
 
-      {/* Bottom PTT bar */}
+      {/* Bottom PTT */}
       <div
         style={{
           position: "fixed",
@@ -450,7 +408,6 @@ Do NOT speak long paragraphs.
             color: "#fff",
             fontWeight: 900,
             fontSize: 16,
-            cursor: !connected ? "not-allowed" : "pointer",
           }}
         >
           {!connected ? "Connect first" : pttActive ? "Release to Stop" : "Hold to Talk 🎤"}
