@@ -47,8 +47,6 @@ export default function ChatPage() {
   }
 
   function ensureRemoteAudioPlays() {
-    // Mobile browsers need a user gesture to play audio.
-    // This function tries to "kick" playback after user presses something.
     const el = remoteAudioRef.current;
     if (!el) return;
     try {
@@ -72,7 +70,6 @@ export default function ChatPage() {
       });
       pcRef.current = pc;
 
-      // Remote audio stream
       remoteStreamRef.current = new MediaStream();
 
       pc.ontrack = (event) => {
@@ -100,20 +97,17 @@ export default function ChatPage() {
         }
       };
 
-      // Create a data channel for events
+      // Create data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
       dc.onopen = () => {
-        // Session configuration (safe defaults for mobile)
-        // If your greeting already works, this won't break it.
+        // Session config (safe defaults)
         sendJSON({
           type: "session.update",
           session: {
-            // Let the model detect end-of-speech (works well with mic track)
             turn_detection: { type: "server_vad" },
             input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
-            // If you already set voice on server, this is still ok:
             voice: "alloy",
             instructions:
               "You are Amin Sir AI Voice Tutor. Speak simple, friendly Hinglish (mostly English). Ask short questions. Encourage the student. Correct gently.",
@@ -121,7 +115,7 @@ export default function ChatPage() {
           },
         });
 
-        // Trigger greeting (you said greeting works already; this is consistent)
+        // Greeting
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -133,45 +127,62 @@ export default function ChatPage() {
         sendJSON({ type: "response.create" });
       };
 
-      dc.onmessage = (event) => {
-        // Optional: you can add debug logging here later if needed
-        // console.log("DC msg:", event.data);
-      };
+      dc.onmessage = () => {};
+      dc.onerror = (e) => console.error("DataChannel error", e);
 
-      dc.onerror = (e) => {
-        console.error("DataChannel error", e);
-      };
-
-      // IMPORTANT: add audio transceiver (sendrecv) even before mic track, so we can receive audio
+      // Receive audio even before mic is added
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
       // 2) Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 3) Send SDP to your server route (PUT) to get answer SDP
+      // 3) Send SDP to server (PUT) to get answer SDP
       const r = await fetch("/api/realtime", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          // Keep token available if your server route uses it:
           token,
           sdp: pc.localDescription.sdp,
         }),
       });
 
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data, null, 2));
-      if (!data?.sdp) throw new Error("Answer SDP missing from /api/realtime PUT response.");
+      // ✅ FIX: accept JSON or raw text, and multiple possible keys
+      let data = null;
+      let text = "";
+      const ct = r.headers.get("content-type") || "";
 
-      await pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
+      if (ct.includes("application/json")) {
+        data = await r.json().catch(() => null);
+      } else {
+        text = await r.text().catch(() => "");
+      }
+
+      if (!r.ok) {
+        const msg =
+          (data && (data?.error?.message || data?.message)) ||
+          text ||
+          "PUT /api/realtime failed";
+        throw new Error(msg);
+      }
+
+      const answerSdp =
+        (data && (data.sdp || data.answer?.sdp || data.data?.sdp || data.answer)) ||
+        (typeof text === "string" && text.trim().startsWith("v=") ? text.trim() : "");
+
+      if (!answerSdp) {
+        throw new Error(
+          "Answer SDP missing from /api/realtime PUT response. Received: " +
+            JSON.stringify(data || { text: text.slice(0, 200) }, null, 2)
+        );
+      }
+
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
       setStatus("Connected ✅");
       setConnected(true);
       setError("");
 
-      // Prepare audio element
-      // NOTE: autoplay on mobile may still need a tap/gesture—our Hold-to-Talk provides that.
       ensureRemoteAudioPlays();
     } catch (e) {
       setConnected(false);
@@ -215,9 +226,9 @@ export default function ChatPage() {
   async function startTalking() {
     if (!pcRef.current) throw new Error("Not connected. Click Start Voice first.");
 
-    ensureRemoteAudioPlays(); // user gesture helps unlock audio
+    ensureRemoteAudioPlays(); // user gesture unlocks audio on mobile
 
-    // If already have a stream, just enable tracks
+    // already have stream -> just enable
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => (t.enabled = true));
       return;
@@ -234,7 +245,6 @@ export default function ChatPage() {
 
     localStreamRef.current = stream;
 
-    // Add tracks to PC
     const pc = pcRef.current;
     const senders = [];
     for (const track of stream.getTracks()) {
@@ -246,7 +256,6 @@ export default function ChatPage() {
 
   function stopTalking(fullStop = false) {
     try {
-      // Disable tracks for push-to-talk (fast resume)
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => {
           if (fullStop) {
@@ -260,10 +269,8 @@ export default function ChatPage() {
       }
 
       if (fullStop) {
-        // Clean everything
         localStreamRef.current = null;
 
-        // Remove senders (optional but cleaner)
         if (pcRef.current && sendersRef.current.length) {
           for (const s of sendersRef.current) {
             try {
@@ -285,9 +292,6 @@ export default function ChatPage() {
     setError("");
     try {
       await startTalking();
-
-      // Optional: Let student speak without interruption (works fine with server_vad too)
-      // sendJSON({ type: "session.update", session: { turn_detection: { type: "none" } } });
     } catch (e) {
       setPttActive(false);
       setErr(e);
@@ -299,17 +303,13 @@ export default function ChatPage() {
     try {
       stopTalking(false);
 
-      // Ask assistant to respond after student stops
+      // Ask assistant to respond after release
       sendJSON({ type: "response.create" });
-
-      // Re-enable VAD if you disabled it (kept commented above)
-      // sendJSON({ type: "session.update", session: { turn_detection: { type: "server_vad" } } });
     } catch (e) {
       setErr(e);
     }
   }
 
-  // Clean up on page unload
   useEffect(() => {
     return () => {
       try {
@@ -407,14 +407,14 @@ export default function ChatPage() {
           {tutorMode ? (
             <>
               <div style={{ marginBottom: 6 }}>
-                <b>How to use (Mobile):</b> Tap <b>Start Voice</b> once → then <b>Hold to Talk</b> → release to get reply.
+                <b>Mobile steps:</b> Tap <b>Start Voice</b> once → then <b>Hold to Talk</b> → release for reply.
               </div>
               <div>
-                Tip: On mobile, the first tap unlocks audio. If you don’t hear the tutor, press <b>Hold to Talk</b> once and release.
+                Tip: First tap unlocks audio on mobile. If you don’t hear the tutor, press <b>Hold to Talk</b> once and release.
               </div>
             </>
           ) : (
-            <div>You can still connect voice, but the bottom Tutor controls are disabled.</div>
+            <div>You can still connect voice, but tutor controls are disabled.</div>
           )}
         </div>
       </div>
@@ -497,7 +497,6 @@ export default function ChatPage() {
             try {
               if (pttActive) pttStop();
             } catch {}
-            // Optional: end session action
           }}
           style={{
             padding: "10px 12px",
