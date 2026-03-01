@@ -10,7 +10,7 @@ const FOLLOWUP_SILENCE_MS = 12000; // 12 sec after AI finishes
 const MAX_FOLLOWUPS_PER_SESSION = 6;
 const FOLLOWUP_COOLDOWN_MS = 15000;
 
-// ✅ Feature C (Step-1): Daily usage tracking (10-minute system)
+// ✅ Feature C: Daily usage limit (counts total connected time)
 const DAILY_LIMIT_MINUTES = 10;
 const USAGE_KEY = "aminsir_daily_usage_v1";
 
@@ -110,10 +110,11 @@ export default function ChatPage() {
   const lastFollowupAtRef = useRef(0);
   const studentSpeakingRef = useRef(false);
 
-  // ✅ Feature C Step-1 refs (timer)
+  // ✅ Feature C refs (timer + safety)
   const sessionStartRef = useRef(null);
   const sessionTimerRef = useRef(null);
   const usedTodayRef = useRef(0);
+  const limitTriggeredRef = useRef(false);
 
   const [status, setStatus] = useState("Idle");
   const [step, setStep] = useState("—");
@@ -204,6 +205,7 @@ export default function ChatPage() {
     if (!connected) return false;
     if (!dcOpen) return false;
     if (stoppingRef.current) return false;
+    if (limitTriggeredRef.current) return false;
     if (followupCountRef.current >= MAX_FOLLOWUPS_PER_SESSION) return false;
     if (studentSpeakingRef.current) return false;
     if (now - lastFollowupAtRef.current < FOLLOWUP_COOLDOWN_MS) return false;
@@ -243,7 +245,7 @@ End with: "Your turn—answer in 1 line."`,
     }, FOLLOWUP_SILENCE_MS);
   }
 
-  // ✅ Feature C Step-1: Daily usage helper functions
+  // ✅ Feature C helpers
   function getTodayUsage() {
     try {
       const raw = localStorage.getItem(USAGE_KEY);
@@ -266,28 +268,14 @@ End with: "Your turn—answer in 1 line."`,
     } catch {}
   }
 
-  function startSessionTimer() {
-    if (sessionTimerRef.current) return; // already running
-    sessionStartRef.current = Date.now();
-
-    sessionTimerRef.current = setInterval(() => {
-      if (!sessionStartRef.current) return;
-      const elapsed = (Date.now() - sessionStartRef.current) / 60000;
-      const total = usedTodayRef.current + elapsed;
-
-      // show usage in Step line (debug)
-      setStep((prev) => {
-        // keep existing step info if you want; but we show usage for clarity
-        return `Today usage: ${total.toFixed(1)} / ${DAILY_LIMIT_MINUTES} min`;
-      });
-    }, 5000);
-  }
-
   function stopSessionTimer() {
     if (!sessionStartRef.current) return;
 
     const elapsed = (Date.now() - sessionStartRef.current) / 60000;
     usedTodayRef.current += elapsed;
+
+    // cap to limit (clean UI)
+    if (usedTodayRef.current > DAILY_LIMIT_MINUTES) usedTodayRef.current = DAILY_LIMIT_MINUTES;
 
     saveTodayUsage(usedTodayRef.current);
 
@@ -297,6 +285,67 @@ End with: "Your turn—answer in 1 line."`,
       clearInterval(sessionTimerRef.current);
       sessionTimerRef.current = null;
     }
+  }
+
+  async function handleDailyLimitReached() {
+    if (limitTriggeredRef.current) return;
+    limitTriggeredRef.current = true;
+
+    clearFollowupTimer();
+    stopSessionTimer();
+
+    setStatus("Daily limit reached");
+    setError("");
+
+    try {
+      // polite closing message in AUDIO
+      sendJSON({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "In AUDIO: politely end today's class. Say: Great practice today! Your 10-minute session is complete. Aaj ka practice ho gaya. Come tomorrow and we continue. Keep it short and friendly.",
+            },
+          ],
+        },
+      });
+
+      sendJSON({
+        type: "response.create",
+        response: { modalities: ["audio"], max_output_tokens: 120 },
+      });
+    } catch {}
+
+    // give few seconds for audio to play, then close
+    setTimeout(() => {
+      stopAllImmediate();
+      setStatus("Daily limit completed ✅");
+      setStep(`Today usage: ${DAILY_LIMIT_MINUTES.toFixed(1)} / ${DAILY_LIMIT_MINUTES} min`);
+    }, 5000);
+  }
+
+  function startSessionTimer() {
+    if (sessionTimerRef.current) return; // already running
+    sessionStartRef.current = Date.now();
+
+    sessionTimerRef.current = setInterval(() => {
+      if (!sessionStartRef.current) return;
+
+      const elapsed = (Date.now() - sessionStartRef.current) / 60000;
+      const total = usedTodayRef.current + elapsed;
+
+      // update UI
+      setStep(`Today usage: ${Math.min(total, DAILY_LIMIT_MINUTES).toFixed(1)} / ${DAILY_LIMIT_MINUTES} min`);
+
+      // ⛔ Auto stop when limit reached
+      if (total >= DAILY_LIMIT_MINUTES) {
+        handleDailyLimitReached();
+      }
+    }, 5000);
   }
 
   async function getEphemeralKey() {
@@ -394,7 +443,6 @@ End with: "Your turn—answer in 1 line."`,
     };
   }
 
-  // ✅ Normal teacher speed (NOT slow motion) + Hinglish rule + anti-repeat rule
   function buildTutorInstructions(selectedLevel) {
     const prof = levelProfile(selectedLevel);
 
@@ -430,7 +478,6 @@ Always respond in AUDIO.
   }
 
   async function startVoice() {
-    // ✅ lock: prevent double start
     if (startLockRef.current) return;
     startLockRef.current = true;
 
@@ -444,16 +491,28 @@ Always respond in AUDIO.
     setGotRemoteTrack(false);
     setConnected(false);
 
-    greetedRef.current = false; // reset greeting flag for new session
+    greetedRef.current = false;
 
-    // ✅ reset Feature A counters for new session
+    // reset Feature A
     followupCountRef.current = 0;
     lastFollowupAtRef.current = 0;
     studentSpeakingRef.current = false;
     clearFollowupTimer();
 
-    // ✅ Feature C Step-1: load today's usage
+    // reset limit trigger
+    limitTriggeredRef.current = false;
+
+    // load today's usage
     usedTodayRef.current = getTodayUsage();
+
+    // 🚫 If already used today's limit, block start
+    if (usedTodayRef.current >= DAILY_LIMIT_MINUTES) {
+      setStatus("Daily limit reached");
+      setStep(`Today usage: ${DAILY_LIMIT_MINUTES.toFixed(1)} / ${DAILY_LIMIT_MINUTES} min`);
+      setError("Today's 10-minute practice is completed ✅ Please come tomorrow 🙂");
+      startLockRef.current = false;
+      return;
+    }
 
     try {
       const key = await getEphemeralKey();
@@ -464,7 +523,6 @@ Always respond in AUDIO.
       });
       pcRef.current = pc;
 
-      // ✅ Start timer when connected; stop when disconnected/closed
       pc.onconnectionstatechange = () => {
         setStatus(`PC: ${pc.connectionState}`);
 
@@ -513,7 +571,6 @@ Always respond in AUDIO.
           },
         });
 
-        // ✅ greet only once
         if (!greetedRef.current) {
           greetedRef.current = true;
 
@@ -565,9 +622,9 @@ Aapka naam kya hai? What is your name?"`,
       setStep("Applying answer…");
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
 
-      setStep(`Connected ✅ (Tap Enable Sound once)`);
       setStatus("Connected ✅");
       setConnected(true);
+      setStep(`Today usage: ${usedTodayRef.current.toFixed(1)} / ${DAILY_LIMIT_MINUTES} min (Tap Enable Sound)`);
     } catch (e) {
       setStatus("Error");
       setErr(e);
@@ -577,7 +634,6 @@ Aapka naam kya hai? What is your name?"`,
   }
 
   function stopAllImmediate() {
-    // ✅ Stop timers
     clearFollowupTimer();
     stopSessionTimer();
 
@@ -624,18 +680,17 @@ Aapka naam kya hai? What is your name?"`,
     } catch {}
 
     greetedRef.current = false;
-    startLockRef.current = false; // ✅ unlock start now
+    startLockRef.current = false;
 
     setDcOpen(false);
     setGotRemoteTrack(false);
     setConnected(false);
     setMicOn(false);
     setStatus("Closed");
-    setStep("—");
+    // keep step as last usage message
   }
 
   async function stopWithReport() {
-    // ✅ Stop timers first
     clearFollowupTimer();
     stopSessionTimer();
 
@@ -938,7 +993,7 @@ Keep it short.
           <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
             ✅ Auto follow-up ON: If student stays silent after AI finishes, Amin Sir prompts again after ~12 seconds.
             <br />
-            ⏱ Daily usage tracking ON: Step line shows "Today usage: X / 10 min" (limit stop will be next step).
+            🔐 Daily limit ON: Max {DAILY_LIMIT_MINUTES} minutes/day (counts total connected time). After limit → closing message + auto stop.
           </div>
         </div>
       </div>
