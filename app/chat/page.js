@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_KEY = "aminsir_progress_v2"; // local storage key
+const LS_KEY = "aminsir_progress_v3";
+const VOICE = "onyx"; // ✅ male voice
 
 function todayKeyLocal() {
   const d = new Date();
@@ -66,29 +67,13 @@ function levelToText(level) {
 }
 
 function levelProfile(level) {
-  // Controls question complexity + correction strictness
   if (level === "advanced") {
-    return {
-      vocab: "moderate to high",
-      sentence: "medium length",
-      questions: "open-ended, opinion based",
-      correction: "more strict",
-    };
+    return { vocab: "moderate to high", questions: "opinion + story + reasons", correction: "more strict" };
   }
   if (level === "medium") {
-    return {
-      vocab: "simple to moderate",
-      sentence: "short to medium",
-      questions: "mix of short + some open-ended",
-      correction: "balanced",
-    };
+    return { vocab: "simple to moderate", questions: "mix easy + open ended", correction: "balanced" };
   }
-  return {
-    vocab: "very simple",
-    sentence: "very short",
-    questions: "very easy daily-life",
-    correction: "gentle and minimal",
-  };
+  return { vocab: "very simple", questions: "very easy daily-life", correction: "gentle" };
 }
 
 export default function ChatPage() {
@@ -97,11 +82,11 @@ export default function ChatPage() {
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
 
-  // Report aggregation from DC
+  // Report capture
+  const stoppingRef = useRef(false);
   const reportTextRef = useRef("");
   const reportResolveRef = useRef(null);
   const reportTimeoutRef = useRef(null);
-  const stoppingRef = useRef(false);
 
   const [status, setStatus] = useState("Idle");
   const [step, setStep] = useState("—");
@@ -114,11 +99,9 @@ export default function ChatPage() {
   const [micOn, setMicOn] = useState(false);
 
   const [reportLoading, setReportLoading] = useState(false);
-
-  // Score card state
-  const [scoreCard, setScoreCard] = useState(null); // { score, grammar, tip, summary, date }
+  const [scoreCard, setScoreCard] = useState(null);
   const [streak, setStreak] = useState(0);
-  const [history, setHistory] = useState([]); // [{date, score}]
+  const [history, setHistory] = useState([]);
   const [level, setLevel] = useState("beginner");
 
   useEffect(() => {
@@ -131,8 +114,7 @@ export default function ChatPage() {
   function persistLevel(newLevel) {
     setLevel(newLevel);
     const prev = loadProgress();
-    const next = { ...prev, level: newLevel };
-    saveProgress(next);
+    saveProgress({ ...prev, level: newLevel });
   }
 
   function setErr(e) {
@@ -149,7 +131,6 @@ export default function ChatPage() {
       el.muted = false;
       el.volume = 1;
       el.playsInline = true;
-
       const p = el.play?.();
       if (p && typeof p.then === "function") {
         p.then(() => setSoundEnabled(true)).catch(() => setSoundEnabled(false));
@@ -178,12 +159,10 @@ export default function ChatPage() {
 
   async function ensureMicTrack(pc) {
     setStep("Requesting microphone…");
-
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
     });
-
     localStreamRef.current = stream;
 
     const track = stream.getAudioTracks()[0];
@@ -196,21 +175,59 @@ export default function ChatPage() {
     setMicOn(true);
   }
 
+  // ✅ Robust text extraction from various realtime event payloads
+  function extractAnyText(msg) {
+    // 1) direct delta fields
+    const candidates = [
+      msg?.delta,
+      msg?.text?.delta,
+      msg?.output_text?.delta,
+      msg?.response?.output_text?.delta,
+      msg?.response?.text?.delta,
+    ];
+    for (const c of candidates) {
+      if (typeof c === "string" && c.length) return c;
+    }
+
+    // 2) some events provide "text" directly
+    const direct = [msg?.text, msg?.output_text, msg?.response?.output_text, msg?.response?.text];
+    for (const d of direct) {
+      if (typeof d === "string" && d.length) return d;
+    }
+
+    // 3) completed event can include full output structure
+    // Try to dig out any .content[].text
+    const output = msg?.response?.output;
+    if (Array.isArray(output)) {
+      let outText = "";
+      for (const item of output) {
+        const content = item?.content;
+        if (Array.isArray(content)) {
+          for (const part of content) {
+            if (typeof part?.text === "string") outText += part.text;
+            if (typeof part?.transcript === "string") outText += part.transcript;
+          }
+        }
+      }
+      if (outText.trim()) return outText;
+    }
+
+    return "";
+  }
+
   function attachDcMessageHandler(dc) {
     dc.onmessage = (ev) => {
+      let msg;
       try {
-        const msg = JSON.parse(ev.data);
-        if (!stoppingRef.current) return;
+        msg = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
 
-        const delta =
-          msg?.delta ||
-          msg?.text?.delta ||
-          msg?.output_text?.delta ||
-          msg?.response?.output_text?.delta;
-
-        if (typeof delta === "string" && delta.length) {
-          reportTextRef.current += delta;
-        }
+      // capture report only during stop flow
+      if (stoppingRef.current) {
+        const t = extractAnyText(msg);
+        if (t) reportTextRef.current += t;
 
         if (msg?.type === "response.completed" || msg?.type === "response.done") {
           if (typeof reportResolveRef.current === "function") {
@@ -218,37 +235,37 @@ export default function ChatPage() {
             reportResolveRef.current = null;
           }
         }
-      } catch {}
+      }
     };
   }
 
   function buildTutorInstructions(selectedLevel) {
     const prof = levelProfile(selectedLevel);
 
+    // ✅ Force slow teacher speed using strict rules + pause markers
     return `
 You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
 
-Language & speed rules (VERY IMPORTANT):
-• Speak like a real teacher: slow pace, clear pronunciation.
-• Use short pauses. Short sentences.
-• Use 80% English + 20% very simple Hindi (Hinglish).
-• Do NOT use difficult Hindi words. Use simple Hindi only for explanation.
-Example style:
-"Good! Very nice. Ab ek aur question. Tell me about your school."
+VOICE SPEED & STYLE (MUST FOLLOW):
+• Speak VERY SLOW like a teacher. Use short sentences only.
+• Add small pauses between sentences (use "…").
+• Do NOT speak fast. Do NOT speak long paragraphs.
+• Give ONE question at a time.
 
-Level: ${levelToText(selectedLevel)}
-Level settings:
+LANGUAGE MIX (MUST FOLLOW):
+• 80% English + 20% very simple Hindi (Hinglish).
+• Use Hindi only for quick help/explanation. Keep Hindi words very simple.
+Example:
+"Good! … Very nice. … Ab ek aur question. … Tell me about your school."
+
+LEVEL: ${levelToText(selectedLevel)}
 • Vocabulary: ${prof.vocab}
-• Sentence length: ${prof.sentence}
-• Question style: ${prof.questions}
-• Correction style: ${prof.correction}
+• Questions: ${prof.questions}
+• Correction: ${prof.correction}
 
 Conversation rules:
-• One question at a time.
-• Always keep the conversation going.
-• Ask daily life questions (school, friends, hobbies, food, games).
-• Encourage the student: "Good!", "Nice try!", "Very good!", "Try again".
-• Correct gently using simple examples.
+• Keep the student talking as much as possible.
+• Correct gently with one small example.
 • Do NOT give scores during conversation.
 
 Always respond in AUDIO.
@@ -304,21 +321,21 @@ Always respond in AUDIO.
       dc.onopen = async () => {
         setDcOpen(true);
 
-        // Apply session + level instructions
+        // ✅ Male voice + forced slow teacher style + Hinglish rules
         sendJSON({
           type: "session.update",
           session: {
             modalities: ["audio", "text"],
-            voice: "alloy",
-            audio: { output: { voice: "alloy", format: "pcm16" } },
+            voice: VOICE,
+            audio: { output: { voice: VOICE, format: "pcm16" } },
             turn_detection: { type: "server_vad" },
             instructions: buildTutorInstructions(level),
           },
         });
 
-        await new Promise((r) => setTimeout(r, 200));
+        await new Promise((r) => setTimeout(r, 250));
 
-        // Greeting: includes level mention softly
+        // Greeting (also contains Hinglish + slow markers)
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -327,10 +344,10 @@ Always respond in AUDIO.
             content: [
               {
                 type: "input_text",
-                text:
-                  `Say exactly in AUDIO: "Hello beta! I am Amin Sir. We will practice English speaking. Your level is ${levelToText(
-                    level
-                  )}. What is your name?"`,
+                text: `Say exactly in AUDIO, very slow with small pauses (use …):
+"Hello beta… I am Amin Sir… We will practice English speaking… Level is ${levelToText(
+                  level
+                )}… Aapka naam kya hai? … What is your name?"`,
               },
             ],
           },
@@ -338,7 +355,7 @@ Always respond in AUDIO.
 
         sendJSON({
           type: "response.create",
-          response: { modalities: ["audio"], max_output_tokens: 160 },
+          response: { modalities: ["audio"], max_output_tokens: 180 },
         });
 
         enableSoundNonBlocking();
@@ -431,31 +448,33 @@ Always respond in AUDIO.
 
     setStep("Stopping & generating score…");
     setStatus("Evaluating…");
-    stoppingRef.current = true;
 
-    // turn mic off immediately
+    // mic off
     try {
       const track = localStreamRef.current?.getAudioTracks?.()?.[0];
       if (track) track.enabled = false;
       setMicOn(false);
     } catch {}
 
-    try {
-      reportTextRef.current = "";
+    stoppingRef.current = true;
+    reportTextRef.current = "";
 
+    try {
       const donePromise = new Promise((resolve) => {
         reportResolveRef.current = resolve;
       });
 
+      // timeout 9s (more reliable)
       reportTimeoutRef.current = setTimeout(() => {
         if (typeof reportResolveRef.current === "function") {
           reportResolveRef.current();
           reportResolveRef.current = null;
         }
-      }, 7000);
+      }, 9000);
 
       const prof = levelProfile(level);
 
+      // ✅ Ask for STRICT JSON report (Hinglish 80/20)
       sendJSON({
         type: "conversation.item.create",
         item: {
@@ -465,22 +484,20 @@ Always respond in AUDIO.
             {
               type: "input_text",
               text: `
-Give a FINAL evaluation for today's speaking session.
+Give FINAL evaluation for today.
 
 Return STRICT JSON only (no extra text), exactly:
 {
   "score": 0-10,
-  "grammar": "one correction in simple English + small Hindi help (80/20)",
-  "tip": "one improvement tip in simple English + small Hindi help (80/20)",
-  "summary": "one short encouraging line (80/20)",
+  "grammar": "one correction (80% English + 20% simple Hindi)",
+  "tip": "one tip (80% English + 20% simple Hindi)",
+  "summary": "one encouraging line (80% English + 20% simple Hindi)",
   "level": "${levelToText(level)}"
 }
 
-Rules:
-• Speak for ${levelToText(level)} level.
-• Vocabulary: ${prof.vocab}
-• Sentence length: ${prof.sentence}
-• Keep it friendly.
+Student level: ${levelToText(level)}
+Vocabulary: ${prof.vocab}
+Be short and simple.
               `.trim(),
             },
           ],
@@ -499,8 +516,8 @@ Rules:
         reportTimeoutRef.current = null;
       }
 
+      // Try parse JSON
       const raw = (reportTextRef.current || "").trim();
-
       let parsed = null;
       try {
         parsed = JSON.parse(raw);
@@ -512,37 +529,39 @@ Rules:
       const grammar = typeof parsed?.grammar === "string" ? parsed.grammar : "";
       const tip = typeof parsed?.tip === "string" ? parsed.tip : "";
       const summary = typeof parsed?.summary === "string" ? parsed.summary : "";
-
       const today = todayKeyLocal();
 
       const card =
         score !== null
           ? { score, grammar, tip, summary, date: today, level: levelToText(level) }
-          : { score: null, grammar: "", tip: "", summary: "", date: today, raw: raw || "Report not received." };
+          : { score: null, raw: raw || "Report not received. Try again.", date: today, level: levelToText(level) };
 
       setScoreCard(card);
 
-      const prev = loadProgress();
-      const s = computeNewStreak(prev.lastDay, prev.streak);
+      // Update streak + 7-day history if score exists
+      if (score !== null) {
+        const prev = loadProgress();
+        const s = computeNewStreak(prev.lastDay, prev.streak);
 
-      const newHistory = [
-        ...(Array.isArray(prev.history) ? prev.history : []).filter((x) => x?.date !== today),
-        ...(score !== null ? [{ date: today, score }] : []),
-      ]
-        .sort((a, b) => (a.date > b.date ? 1 : -1))
-        .slice(-7);
+        const newHistory = [
+          ...(Array.isArray(prev.history) ? prev.history : []).filter((x) => x?.date !== today),
+          { date: today, score },
+        ]
+          .sort((a, b) => (a.date > b.date ? 1 : -1))
+          .slice(-7);
 
-      const next = { ...prev, streak: s.streak, lastDay: s.lastDay, history: newHistory, level };
-      saveProgress(next);
+        const next = { ...prev, streak: s.streak, lastDay: s.lastDay, history: newHistory, level };
+        saveProgress(next);
 
-      setStreak(next.streak);
-      setHistory(next.history);
+        setStreak(next.streak);
+        setHistory(next.history);
+      }
     } catch (e) {
       setErr(e);
-      setScoreCard({ score: null, raw: "Report failed. Please try again.", date: todayKeyLocal() });
+      setScoreCard({ score: null, raw: "Report failed. Please try again.", date: todayKeyLocal(), level: levelToText(level) });
     } finally {
-      setReportLoading(false);
       stoppingRef.current = false;
+      setReportLoading(false);
       stopAllImmediate();
     }
   }
@@ -569,7 +588,7 @@ Rules:
     <div style={{ maxWidth: 860, margin: "0 auto", padding: 16, paddingBottom: 50 }}>
       <h2 style={{ margin: "8px 0 8px" }}>Amin Sir AI Tutor</h2>
 
-      {/* Level selector */}
+      {/* Level + streak */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontWeight: 900 }}>Level:</div>
         <select
@@ -581,7 +600,6 @@ Rules:
           <option value="medium">Medium</option>
           <option value="advanced">Advanced</option>
         </select>
-
         <div style={{ marginLeft: "auto", fontWeight: 900 }}>🔥 Streak: {streak} day{streak === 1 ? "" : "s"}</div>
       </div>
 
@@ -609,7 +627,15 @@ Rules:
 
         <button
           onClick={stopWithReport}
-          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", fontWeight: 900 }}
+          disabled={!connected || reportLoading}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: !connected || reportLoading ? "#f3f4f6" : "#fff",
+            fontWeight: 900,
+            opacity: !connected || reportLoading ? 0.6 : 1,
+          }}
         >
           Stop ⛔ (Score Card)
         </button>
@@ -633,7 +659,7 @@ Rules:
 
       <audio ref={remoteAudioRef} autoPlay playsInline controls style={{ width: "100%", marginTop: 12 }} />
 
-      {/* Trophy + Score card */}
+      {/* Score Card */}
       <div style={{ marginTop: 16, padding: 14, border: "1px solid #eee", borderRadius: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
           <div style={{ fontWeight: 900, fontSize: 16 }}>🏆 Today’s Score Card</div>
@@ -644,7 +670,9 @@ Rules:
           <div style={{ marginTop: 10, fontWeight: 800 }}>Generating score…</div>
         ) : scoreCard ? (
           scoreCard.score === null ? (
-            <pre style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{scoreCard.raw || "No report."}</pre>
+            <div style={{ marginTop: 10, fontWeight: 800, color: "#b91c1c" }}>
+              {scoreCard.raw || "Report not received. Try again."}
+            </div>
           ) : (
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
               <div style={{ display: "flex", gap: 12, alignItems: "center", padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
