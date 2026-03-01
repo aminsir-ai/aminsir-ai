@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const LS_KEY = "aminsir_progress_v3";
-const VOICE = "onyx"; // ✅ male voice
+const LS_KEY = "aminsir_progress_v4";
+const VOICE = "onyx"; // male voice
 
 function todayKeyLocal() {
   const d = new Date();
@@ -67,12 +67,8 @@ function levelToText(level) {
 }
 
 function levelProfile(level) {
-  if (level === "advanced") {
-    return { vocab: "moderate to high", questions: "opinion + story + reasons", correction: "more strict" };
-  }
-  if (level === "medium") {
-    return { vocab: "simple to moderate", questions: "mix easy + open ended", correction: "balanced" };
-  }
+  if (level === "advanced") return { vocab: "moderate to high", questions: "opinion + story + reasons", correction: "more strict" };
+  if (level === "medium") return { vocab: "simple to moderate", questions: "mix easy + open ended", correction: "balanced" };
   return { vocab: "very simple", questions: "very easy daily-life", correction: "gentle" };
 }
 
@@ -81,6 +77,11 @@ export default function ChatPage() {
   const dcRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
+
+  // ✅ Mobile audio fallback (important)
+  const audioCtxRef = useRef(null);
+  const audioSrcRef = useRef(null); // MediaStreamAudioSourceNode
+  const remoteStreamRef = useRef(null);
 
   // Report capture
   const stoppingRef = useRef(false);
@@ -123,22 +124,45 @@ export default function ChatPage() {
     setError(msg);
   }
 
-  // Non-blocking audio unlock
-  function enableSoundNonBlocking() {
+  // ✅ Strong unlock for mobile audio (user tap)
+  async function enableSoundStrong() {
+    setError("");
     try {
+      // 1) unlock audio element
       const el = remoteAudioRef.current;
-      if (!el) return;
-      el.muted = false;
-      el.volume = 1;
-      el.playsInline = true;
-      const p = el.play?.();
-      if (p && typeof p.then === "function") {
-        p.then(() => setSoundEnabled(true)).catch(() => setSoundEnabled(false));
-      } else {
-        setSoundEnabled(true);
+      if (el) {
+        el.muted = false;
+        el.volume = 1;
+        el.playsInline = true;
+        // attempt play
+        const p = el.play?.();
+        if (p && typeof p.then === "function") {
+          await p;
+        }
       }
-    } catch {
+
+      // 2) unlock / resume AudioContext (mobile fix)
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        if (!audioCtxRef.current) audioCtxRef.current = new AC();
+        if (audioCtxRef.current.state === "suspended") await audioCtxRef.current.resume();
+
+        // if we already have remote stream, route it to speakers
+        if (remoteStreamRef.current) {
+          try {
+            if (audioSrcRef.current) audioSrcRef.current.disconnect();
+          } catch {}
+          try {
+            audioSrcRef.current = audioCtxRef.current.createMediaStreamSource(remoteStreamRef.current);
+            audioSrcRef.current.connect(audioCtxRef.current.destination);
+          } catch {}
+        }
+      }
+
+      setSoundEnabled(true);
+    } catch (e) {
       setSoundEnabled(false);
+      setErr(e);
     }
   }
 
@@ -171,13 +195,11 @@ export default function ChatPage() {
     const already = pc.getSenders().some((s) => s.track && s.track.kind === "audio");
     if (!already) pc.addTrack(track, stream);
 
-    track.enabled = true; // hands-free
+    track.enabled = true;
     setMicOn(true);
   }
 
-  // ✅ Robust text extraction from various realtime event payloads
   function extractAnyText(msg) {
-    // 1) direct delta fields
     const candidates = [
       msg?.delta,
       msg?.text?.delta,
@@ -185,18 +207,11 @@ export default function ChatPage() {
       msg?.response?.output_text?.delta,
       msg?.response?.text?.delta,
     ];
-    for (const c of candidates) {
-      if (typeof c === "string" && c.length) return c;
-    }
+    for (const c of candidates) if (typeof c === "string" && c.length) return c;
 
-    // 2) some events provide "text" directly
     const direct = [msg?.text, msg?.output_text, msg?.response?.output_text, msg?.response?.text];
-    for (const d of direct) {
-      if (typeof d === "string" && d.length) return d;
-    }
+    for (const d of direct) if (typeof d === "string" && d.length) return d;
 
-    // 3) completed event can include full output structure
-    // Try to dig out any .content[].text
     const output = msg?.response?.output;
     if (Array.isArray(output)) {
       let outText = "";
@@ -211,7 +226,6 @@ export default function ChatPage() {
       }
       if (outText.trim()) return outText;
     }
-
     return "";
   }
 
@@ -224,7 +238,6 @@ export default function ChatPage() {
         return;
       }
 
-      // capture report only during stop flow
       if (stoppingRef.current) {
         const t = extractAnyText(msg);
         if (t) reportTextRef.current += t;
@@ -241,20 +254,18 @@ export default function ChatPage() {
 
   function buildTutorInstructions(selectedLevel) {
     const prof = levelProfile(selectedLevel);
-
-    // ✅ Force slow teacher speed using strict rules + pause markers
     return `
 You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
 
-VOICE SPEED & STYLE (MUST FOLLOW):
-• Speak VERY SLOW like a teacher. Use short sentences only.
-• Add small pauses between sentences (use "…").
-• Do NOT speak fast. Do NOT speak long paragraphs.
-• Give ONE question at a time.
+SPEED (MUST):
+• Speak VERY SLOW like a teacher.
+• Use short sentences only.
+• Use small pauses: add "…"
+• One question at a time.
 
-LANGUAGE MIX (MUST FOLLOW):
+LANGUAGE MIX (MUST):
 • 80% English + 20% very simple Hindi (Hinglish).
-• Use Hindi only for quick help/explanation. Keep Hindi words very simple.
+• Hindi only for quick help. Simple words only.
 Example:
 "Good! … Very nice. … Ab ek aur question. … Tell me about your school."
 
@@ -263,10 +274,9 @@ LEVEL: ${levelToText(selectedLevel)}
 • Questions: ${prof.questions}
 • Correction: ${prof.correction}
 
-Conversation rules:
-• Keep the student talking as much as possible.
-• Correct gently with one small example.
-• Do NOT give scores during conversation.
+During conversation:
+• Do NOT give scores.
+• Just teach + encourage.
 
 Always respond in AUDIO.
 `.trim();
@@ -284,8 +294,6 @@ Always respond in AUDIO.
     setConnected(false);
 
     try {
-      enableSoundNonBlocking();
-
       const key = await getEphemeralKey();
 
       setStep("Creating peer…");
@@ -301,10 +309,20 @@ Always respond in AUDIO.
 
       pc.ontrack = (e) => {
         setGotRemoteTrack(true);
+
+        // Save remote stream
+        const stream = e.streams?.[0];
+        if (stream) remoteStreamRef.current = stream;
+
+        // Attach to audio element
         const el = remoteAudioRef.current;
-        if (el) {
-          el.srcObject = e.streams[0];
-          enableSoundNonBlocking();
+        if (el && stream) {
+          el.srcObject = stream;
+        }
+
+        // If sound already enabled, also route via AudioContext for mobile
+        if (soundEnabled) {
+          enableSoundStrong();
         }
       };
 
@@ -321,12 +339,13 @@ Always respond in AUDIO.
       dc.onopen = async () => {
         setDcOpen(true);
 
-        // ✅ Male voice + forced slow teacher style + Hinglish rules
+        // ✅ Force audio output formats (more compatible)
         sendJSON({
           type: "session.update",
           session: {
             modalities: ["audio", "text"],
             voice: VOICE,
+            output_audio_format: "pcm16",
             audio: { output: { voice: VOICE, format: "pcm16" } },
             turn_detection: { type: "server_vad" },
             instructions: buildTutorInstructions(level),
@@ -335,7 +354,7 @@ Always respond in AUDIO.
 
         await new Promise((r) => setTimeout(r, 250));
 
-        // Greeting (also contains Hinglish + slow markers)
+        // Greeting
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -344,7 +363,7 @@ Always respond in AUDIO.
             content: [
               {
                 type: "input_text",
-                text: `Say exactly in AUDIO, very slow with small pauses (use …):
+                text: `Say exactly in AUDIO, very slow with pauses (…):
 "Hello beta… I am Amin Sir… We will practice English speaking… Level is ${levelToText(
                   level
                 )}… Aapka naam kya hai? … What is your name?"`,
@@ -357,8 +376,6 @@ Always respond in AUDIO.
           type: "response.create",
           response: { modalities: ["audio"], max_output_tokens: 180 },
         });
-
-        enableSoundNonBlocking();
       };
 
       setStep("Creating offer…");
@@ -386,7 +403,7 @@ Always respond in AUDIO.
       setStep("Applying answer…");
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
 
-      setStep("Connected ✅");
+      setStep("Connected ✅ (Tap Enable Sound once)");
       setStatus("Connected ✅");
       setConnected(true);
     } catch (e) {
@@ -429,14 +446,20 @@ Always respond in AUDIO.
         remoteAudioRef.current.pause?.();
         remoteAudioRef.current.srcObject = null;
       }
+
+      // audio context cleanup
+      try {
+        if (audioSrcRef.current) {
+          audioSrcRef.current.disconnect();
+          audioSrcRef.current = null;
+        }
+      } catch {}
     } catch {}
 
     setDcOpen(false);
     setGotRemoteTrack(false);
-    setSoundEnabled(false);
     setConnected(false);
     setMicOn(false);
-
     setStatus("Closed");
     setStep("—");
   }
@@ -449,7 +472,6 @@ Always respond in AUDIO.
     setStep("Stopping & generating score…");
     setStatus("Evaluating…");
 
-    // mic off
     try {
       const track = localStreamRef.current?.getAudioTracks?.()?.[0];
       if (track) track.enabled = false;
@@ -464,7 +486,6 @@ Always respond in AUDIO.
         reportResolveRef.current = resolve;
       });
 
-      // timeout 9s (more reliable)
       reportTimeoutRef.current = setTimeout(() => {
         if (typeof reportResolveRef.current === "function") {
           reportResolveRef.current();
@@ -474,7 +495,6 @@ Always respond in AUDIO.
 
       const prof = levelProfile(level);
 
-      // ✅ Ask for STRICT JSON report (Hinglish 80/20)
       sendJSON({
         type: "conversation.item.create",
         item: {
@@ -497,7 +517,7 @@ Return STRICT JSON only (no extra text), exactly:
 
 Student level: ${levelToText(level)}
 Vocabulary: ${prof.vocab}
-Be short and simple.
+Keep it short and simple.
               `.trim(),
             },
           ],
@@ -516,7 +536,6 @@ Be short and simple.
         reportTimeoutRef.current = null;
       }
 
-      // Try parse JSON
       const raw = (reportTextRef.current || "").trim();
       let parsed = null;
       try {
@@ -531,15 +550,12 @@ Be short and simple.
       const summary = typeof parsed?.summary === "string" ? parsed.summary : "";
       const today = todayKeyLocal();
 
-      const card =
-        score !== null
-          ? { score, grammar, tip, summary, date: today, level: levelToText(level) }
-          : { score: null, raw: raw || "Report not received. Try again.", date: today, level: levelToText(level) };
+      if (score === null) {
+        setScoreCard({ score: null, raw: raw || "Report not received. Try again.", date: today, level: levelToText(level) });
+      } else {
+        const card = { score, grammar, tip, summary, date: today, level: levelToText(level) };
+        setScoreCard(card);
 
-      setScoreCard(card);
-
-      // Update streak + 7-day history if score exists
-      if (score !== null) {
         const prev = loadProgress();
         const s = computeNewStreak(prev.lastDay, prev.streak);
 
@@ -588,7 +604,6 @@ Be short and simple.
     <div style={{ maxWidth: 860, margin: "0 auto", padding: 16, paddingBottom: 50 }}>
       <h2 style={{ margin: "8px 0 8px" }}>Amin Sir AI Tutor</h2>
 
-      {/* Level + streak */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontWeight: 900 }}>Level:</div>
         <select
@@ -618,11 +633,18 @@ Be short and simple.
           Start Voice 🎤
         </button>
 
+        {/* ✅ Make this the required tap on mobile */}
         <button
-          onClick={enableSoundNonBlocking}
-          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", fontWeight: 900 }}
+          onClick={enableSoundStrong}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: soundEnabled ? "#eaffea" : "#fff",
+            fontWeight: 900,
+          }}
         >
-          Enable Sound 🔊
+          Enable Sound 🔊 {soundEnabled ? "✅" : ""}
         </button>
 
         <button
@@ -659,7 +681,6 @@ Be short and simple.
 
       <audio ref={remoteAudioRef} autoPlay playsInline controls style={{ width: "100%", marginTop: 12 }} />
 
-      {/* Score Card */}
       <div style={{ marginTop: 16, padding: 14, border: "1px solid #eee", borderRadius: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
           <div style={{ fontWeight: 900, fontSize: 16 }}>🏆 Today’s Score Card</div>
@@ -670,9 +691,7 @@ Be short and simple.
           <div style={{ marginTop: 10, fontWeight: 800 }}>Generating score…</div>
         ) : scoreCard ? (
           scoreCard.score === null ? (
-            <div style={{ marginTop: 10, fontWeight: 800, color: "#b91c1c" }}>
-              {scoreCard.raw || "Report not received. Try again."}
-            </div>
+            <div style={{ marginTop: 10, fontWeight: 800, color: "#b91c1c" }}>{scoreCard.raw || "Report not received."}</div>
           ) : (
             <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
               <div style={{ display: "flex", gap: 12, alignItems: "center", padding: 12, borderRadius: 14, border: "1px solid #eee" }}>
@@ -707,11 +726,23 @@ Be short and simple.
           <div style={{ marginTop: 10, color: "#666" }}>Stop the session to generate today’s score card.</div>
         )}
 
-        {/* 7-day progress */}
         <div style={{ marginTop: 14 }}>
           <div style={{ fontWeight: 900, marginBottom: 8 }}>📈 Last 7 Days Progress</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
-            {last7.map((d) => {
+            {useMemo(() => {
+              const map = new Map((history || []).map((h) => [h.date, h.score]));
+              const days = [];
+              const today = new Date(todayKeyLocal() + "T00:00:00");
+              for (let i = 6; i >= 0; i--) {
+                const d = new Date(today);
+                d.setDate(today.getDate() - i);
+                const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+                  d.getDate()
+                ).padStart(2, "0")}`;
+                days.push({ date: key, score: map.has(key) ? map.get(key) : null });
+              }
+              return days;
+            }, [history]).map((d) => {
               const s = d.score;
               const h = s === null ? 12 : 10 + s * 6;
               return (
