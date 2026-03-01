@@ -16,8 +16,7 @@ export default function ChatPage() {
   const [gotRemoteTrack, setGotRemoteTrack] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
-
-  const [pttActive, setPttActive] = useState(false);
+  const [micOn, setMicOn] = useState(false);
 
   function setErr(e) {
     const msg = typeof e === "string" ? e : e?.message || JSON.stringify(e, null, 2);
@@ -25,7 +24,7 @@ export default function ChatPage() {
     setError(msg);
   }
 
-  // Non-blocking (do not await in start)
+  // Non-blocking audio unlock (never await in start)
   function enableSoundNonBlocking() {
     try {
       const el = remoteAudioRef.current;
@@ -76,8 +75,9 @@ export default function ChatPage() {
     const already = pc.getSenders().some((s) => s.track && s.track.kind === "audio");
     if (!already) pc.addTrack(track, stream);
 
-    // default OFF (PTT controls it)
-    track.enabled = false;
+    // ✅ Hands-free: mic ON
+    track.enabled = true;
+    setMicOn(true);
   }
 
   async function startVoice() {
@@ -86,9 +86,9 @@ export default function ChatPage() {
     setStep("Starting…");
     setDcOpen(false);
     setGotRemoteTrack(false);
+    setConnected(false);
 
     try {
-      // Do NOT await play() - it can hang on mobile
       enableSoundNonBlocking();
 
       const key = await getEphemeralKey();
@@ -122,30 +122,42 @@ export default function ChatPage() {
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
+      dc.onmessage = (ev) => {
+        // Optional: keep for debugging later
+        // console.log("DC message:", ev.data);
+      };
+
       dc.onopen = async () => {
         setDcOpen(true);
 
-        // Session config + voice output forced
+        // ✅ Hands-free turn detection (server VAD)
         sendJSON({
           type: "session.update",
           session: {
             modalities: ["audio", "text"],
             voice: "alloy",
             audio: { output: { voice: "alloy", format: "pcm16" } },
+
+            // Auto turn taking
             turn_detection: { type: "server_vad" },
+
             instructions: `
 You are Amin Sir, a friendly Indian English teacher for school students.
-Speak slowly. Short sentences. One question at a time.
-Always reply in AUDIO. Encourage the student.
-After every student reply, ask the next question.
+Hands-free mode: listen automatically and speak automatically.
+Rules:
+• Speak slowly. Short sentences.
+• After each student reply, respond and ask the next question.
+• Encourage the student.
+• One question at a time.
+Always respond in AUDIO.
             `.trim(),
           },
         });
 
-        // tiny delay helps mobile
+        // Small delay helps mobile
         await new Promise((r) => setTimeout(r, 200));
 
-        // Auto greeting
+        // ✅ Auto greeting
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -161,6 +173,7 @@ After every student reply, ask the next question.
           },
         });
 
+        // ✅ Force audio response now
         sendJSON({
           type: "response.create",
           response: { modalities: ["audio"], max_output_tokens: 120 },
@@ -208,7 +221,7 @@ After every student reply, ask the next question.
     setStatus("Closing…");
 
     try {
-      // Stop mic
+      // Stop mic tracks
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => {
           try {
@@ -218,7 +231,7 @@ After every student reply, ask the next question.
         localStreamRef.current = null;
       }
 
-      // Close data channel
+      // Close DC
       if (dcRef.current) {
         try {
           dcRef.current.close();
@@ -226,7 +239,7 @@ After every student reply, ask the next question.
         dcRef.current = null;
       }
 
-      // Close peer connection
+      // Close PC
       if (pcRef.current) {
         try {
           pcRef.current.ontrack = null;
@@ -247,45 +260,28 @@ After every student reply, ask the next question.
     setGotRemoteTrack(false);
     setSoundEnabled(false);
     setConnected(false);
-    setPttActive(false);
+    setMicOn(false);
 
     setStatus("Closed");
     setStep("—");
     setError("");
   }
 
-  function holdStart() {
-    if (!connected) return;
-    setPttActive(true);
-    const track = localStreamRef.current?.getAudioTracks?.()?.[0];
-    if (track) track.enabled = true;
-  }
-
-  function holdStop() {
-    if (!connected) return;
-    setPttActive(false);
-    const track = localStreamRef.current?.getAudioTracks?.()?.[0];
-    if (track) track.enabled = false;
-
-    // Ask for audio reply after student finishes speaking
-    sendJSON({ type: "response.create", response: { modalities: ["audio"], max_output_tokens: 180 } });
-    enableSoundNonBlocking();
-  }
-
+  // Cleanup on leaving page
   useEffect(() => {
     return () => stopAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <div style={{ maxWidth: 760, margin: "0 auto", padding: 16, paddingBottom: 120 }}>
-      <h2 style={{ margin: "8px 0 8px" }}>Amin Sir AI Tutor</h2>
+    <div style={{ maxWidth: 760, margin: "0 auto", padding: 16, paddingBottom: 40 }}>
+      <h2 style={{ margin: "8px 0 8px" }}>Amin Sir AI Tutor (Hands-Free)</h2>
 
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Status: {status}</div>
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Step: {step}</div>
       <div style={{ fontWeight: 800, marginBottom: 12 }}>
         DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound:{" "}
-        {soundEnabled ? "Enabled ✅" : "Locked"}
+        {soundEnabled ? "Enabled ✅" : "Locked"} | Mic: {micOn ? "On ✅" : "Off"}
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -347,57 +343,6 @@ After every student reply, ask the next question.
       ) : null}
 
       <audio ref={remoteAudioRef} autoPlay playsInline controls style={{ width: "100%", marginTop: 12 }} />
-
-      {/* Mobile Hold to Talk */}
-      <div
-        style={{
-          position: "fixed",
-          left: 0,
-          right: 0,
-          bottom: 0,
-          padding: 12,
-          background: "rgba(255,255,255,0.96)",
-          borderTop: "1px solid #eee",
-          display: "flex",
-          gap: 10,
-          zIndex: 50,
-        }}
-      >
-        <button
-          onTouchStart={(e) => {
-            e.preventDefault();
-            holdStart();
-          }}
-          onTouchEnd={(e) => {
-            e.preventDefault();
-            holdStop();
-          }}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            holdStart();
-          }}
-          onMouseUp={(e) => {
-            e.preventDefault();
-            holdStop();
-          }}
-          onMouseLeave={() => {
-            if (pttActive) holdStop();
-          }}
-          style={{
-            flex: 1,
-            padding: "14px 16px",
-            borderRadius: 16,
-            border: "none",
-            background: pttActive ? "#e53935" : "#16a34a",
-            color: "#fff",
-            fontWeight: 900,
-            fontSize: 16,
-            cursor: "pointer",
-          }}
-        >
-          {connected ? (pttActive ? "Release to Stop" : "Hold to Talk 🎤") : "Connect first"}
-        </button>
-      </div>
     </div>
   );
 }
