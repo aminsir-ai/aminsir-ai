@@ -21,12 +21,9 @@ function getAuthUser() {
 const LS_KEY_BASE = "aminsir_progress_v5";
 const USAGE_KEY_BASE = "aminsir_daily_usage_v1";
 
-/** ---------------- Voice config ----------------
- * IMPORTANT:
- * "onyx" is NOT supported in your GA voice list.
- * Use one of: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar
- */
-const VOICE = "marin"; // ✅ male-like voice in GA list
+/** ---------------- Voice config (GA supported voices) ---------------- */
+// ✅ Pick one: "cedar" (recommended), "marin", "alloy", "echo", etc.
+const VOICE = "cedar";
 
 /** ---------------- Feature A: Auto follow-up ---------------- */
 const FOLLOWUP_SILENCE_MS = 6000; // testing
@@ -78,10 +75,22 @@ function levelToText(level) {
 
 function levelProfile(level) {
   if (level === "advanced")
-    return { vocab: "moderate to high", questions: "opinion + story + reasons", correction: "more strict" };
+    return {
+      vocab: "moderate to high",
+      questions: "opinion + story + reasons",
+      correction: "more strict",
+    };
   if (level === "medium")
-    return { vocab: "simple to moderate", questions: "mix easy + open ended", correction: "balanced" };
-  return { vocab: "very simple", questions: "very easy daily-life", correction: "gentle" };
+    return {
+      vocab: "simple to moderate",
+      questions: "mix easy + open ended",
+      correction: "balanced",
+    };
+  return {
+    vocab: "very simple",
+    questions: "very easy daily-life",
+    correction: "gentle",
+  };
 }
 
 export default function ChatPage() {
@@ -187,11 +196,7 @@ export default function ChatPage() {
   const followupCountRef = useRef(0);
   const lastFollowupAtRef = useRef(0);
   const studentSpeakingRef = useRef(false);
-
-  // remember if AI finished speaking and we are waiting for student
   const waitingForStudentRef = useRef(false);
-
-  // prevent double schedule from multiple audio-end events
   const lastAiFinishedAtRef = useRef(0);
 
   /** ---------------- Feature C refs ---------------- */
@@ -474,21 +479,16 @@ End with: "Your turn—answer in 1 line."`,
         return;
       }
 
-      // Student speaking started -> clear follow-up timer
       if (msg?.type === "input_audio_buffer.speech_started") {
         studentSpeakingRef.current = true;
         clearFollowupTimer();
       }
 
-      // Student stopped speaking -> if we are waiting for student, restart follow-up timer
       if (msg?.type === "input_audio_buffer.speech_stopped") {
         studentSpeakingRef.current = false;
-        if (waitingForStudentRef.current) {
-          scheduleFollowup("student_speech_stopped");
-        }
+        if (waitingForStudentRef.current) scheduleFollowup("student_speech_stopped");
       }
 
-      // AI finished speaking -> start follow-up timer
       if (
         msg?.type === "output_audio_buffer.stopped" ||
         msg?.type === "response.audio.done" ||
@@ -498,7 +498,6 @@ End with: "Your turn—answer in 1 line."`,
         markAiFinishedAndSchedule("ai_finished_speaking");
       }
 
-      // Report capture
       if (stoppingRef.current) {
         const t = extractAnyText(msg);
         if (t) reportTextRef.current += t;
@@ -517,31 +516,29 @@ End with: "Your turn—answer in 1 line."`,
     const prof = levelProfile(selectedLevel);
 
     return `
-You are Amin Sir, a strict spoken-English COACH for Indian school students (Class 4–10).
-
-GOAL (cost saving + learning):
-• Student speaks 80%, you speak 20%.
-• Never lecture. Never long grammar explanations.
-• Speak max 1–2 short lines, then ask a question.
-• After correction, force student to repeat.
+You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
 
 SPEED:
-• Normal teacher speed (not fast, not slow motion).
+• Speak at normal TEACHER speed (not fast, not slow motion).
+• Use short sentences. 1–2 sentences per turn.
 
-LANGUAGE:
-• 80% English + 20% very simple Hindi only when needed.
+LANGUAGE MIX (MUST):
+• 80% English + 20% very simple Hindi (Hinglish).
+• Hindi only for quick help/explanation. Keep Hindi very simple.
+
+ANTI-REPEAT (VERY IMPORTANT):
+• Greet only once per session.
 
 LEVEL: ${levelToText(selectedLevel)}
 • Vocabulary: ${prof.vocab}
 • Questions: ${prof.questions}
 • Correction: ${prof.correction}
 
-RULES:
+Conversation:
 • One question at a time.
-• Ask a question every turn.
-• Keep output short.
-• If student is silent, give a short prompt and repeat the same question.
-Always respond in AUDIO.
+• Keep student talking (ask follow-up).
+• If student becomes silent after you finish, gently prompt again with a small hint.
+Always respond in AUDIO (unless asked for text report).
 `.trim();
   }
 
@@ -550,7 +547,6 @@ Always respond in AUDIO.
       setError("Loading user…");
       return;
     }
-
     if (startLockRef.current) return;
     startLockRef.current = true;
 
@@ -567,7 +563,7 @@ Always respond in AUDIO.
     connectedRef.current = false;
     greetedRef.current = false;
 
-    // reset follow-up
+    // reset feature A
     followupCountRef.current = 0;
     lastFollowupAtRef.current = 0;
     studentSpeakingRef.current = false;
@@ -575,7 +571,7 @@ Always respond in AUDIO.
     waitingForStudentRef.current = false;
     clearFollowupTimer();
 
-    // reset limit
+    // reset limit trigger
     limitTriggeredRef.current = false;
 
     // load today's usage
@@ -604,11 +600,7 @@ Always respond in AUDIO.
           setConnected(true);
           connectedRef.current = true;
           startSessionTimer();
-        } else if (
-          pc.connectionState === "disconnected" ||
-          pc.connectionState === "closed" ||
-          pc.connectionState === "failed"
-        ) {
+        } else if (pc.connectionState === "disconnected" || pc.connectionState === "closed" || pc.connectionState === "failed") {
           stopSessionTimer();
           setConnected(false);
           connectedRef.current = false;
@@ -639,21 +631,26 @@ Always respond in AUDIO.
       dc.onopen = async () => {
         setDcOpen(true);
 
-        // ✅ FIXED session.update (NO invalid nested voice fields)
+        // ✅ IMPORTANT FIX:
+        // GA Realtime expects voice here: session.audio.output.voice
         sendJSON({
           type: "session.update",
           session: {
-            modalities: ["audio", "text"],
+            type: "realtime",
             instructions: buildTutorInstructions(level),
-
-            // ✅ voice ONLY here
-            voice: VOICE,
-
-            // ✅ safe audio format
-            output_audio_format: "pcm16",
-
-            // ✅ VAD
-            turn_detection: { type: "server_vad" },
+            audio: {
+              input: {
+                // format is mainly for buffer APIs; safe to set
+                format: { type: "audio/pcm", rate: 24000 },
+                turn_detection: { type: "server_vad" },
+                noise_reduction: { type: "near_field" },
+              },
+              output: {
+                format: { type: "audio/pcm", rate: 24000 },
+                voice: VOICE,
+                speed: 1.0,
+              },
+            },
           },
         });
 
@@ -670,7 +667,7 @@ Always respond in AUDIO.
                   type: "input_text",
                   text: `Say in AUDIO at normal teacher speed:
 "Hello ${user}! Welcome beta. I am Amin Sir. Level is ${levelToText(level)}.
-Tell me ONE sentence about your day."`,
+Tell me one sentence about your day."`,
                 },
               ],
             },
@@ -711,7 +708,7 @@ Tell me ONE sentence about your day."`,
 
       setStep(`Today usage: ${usedTodayRef.current.toFixed(1)} / ${DAILY_LIMIT_MINUTES} min (Tap Enable Sound)`);
 
-      // allow start again after connected
+      // allow stop/start later
       startLockRef.current = false;
     } catch (e) {
       setStatus("Error");
