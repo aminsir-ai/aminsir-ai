@@ -21,12 +21,15 @@ function getAuthUser() {
 const LS_KEY_BASE = "aminsir_progress_v5";
 const USAGE_KEY_BASE = "aminsir_daily_usage_v1";
 
-/** ---------------- Voice config ---------------- */
-const VOICE = "onyx";
+/** ---------------- Voice config ----------------
+ * IMPORTANT:
+ * "onyx" is NOT supported in your GA voice list.
+ * Use one of: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar
+ */
+const VOICE = "marin"; // ✅ male-like voice in GA list
 
 /** ---------------- Feature A: Auto follow-up ---------------- */
-// ✅ keep 6 sec for testing; after confirmed we will set back to 12 sec
-const FOLLOWUP_SILENCE_MS = 6000;
+const FOLLOWUP_SILENCE_MS = 6000; // testing
 const MAX_FOLLOWUPS_PER_SESSION = 6;
 const FOLLOWUP_COOLDOWN_MS = 15000;
 
@@ -185,7 +188,7 @@ export default function ChatPage() {
   const lastFollowupAtRef = useRef(0);
   const studentSpeakingRef = useRef(false);
 
-  // ✅ NEW: remember if AI finished speaking and we are waiting for student
+  // remember if AI finished speaking and we are waiting for student
   const waitingForStudentRef = useRef(false);
 
   // prevent double schedule from multiple audio-end events
@@ -290,7 +293,7 @@ export default function ChatPage() {
     if (!dcOpen) return false;
     if (stoppingRef.current) return false;
     if (limitTriggeredRef.current) return false;
-    if (!waitingForStudentRef.current) return false; // ✅ only after AI finished
+    if (!waitingForStudentRef.current) return false;
     if (followupCountRef.current >= MAX_FOLLOWUPS_PER_SESSION) return false;
     if (studentSpeakingRef.current) return false;
     if (now - lastFollowupAtRef.current < FOLLOWUP_COOLDOWN_MS) return false;
@@ -332,9 +335,7 @@ End with: "Your turn—answer in 1 line."`,
     if (now - lastAiFinishedAtRef.current < 800) return;
     lastAiFinishedAtRef.current = now;
 
-    // ✅ AI finished speaking → now we wait for student response
     waitingForStudentRef.current = true;
-
     scheduleFollowup(reason);
   }
 
@@ -479,17 +480,15 @@ End with: "Your turn—answer in 1 line."`,
         clearFollowupTimer();
       }
 
-      // ✅ Student stopped speaking -> if we are waiting for student, restart follow-up timer
+      // Student stopped speaking -> if we are waiting for student, restart follow-up timer
       if (msg?.type === "input_audio_buffer.speech_stopped") {
         studentSpeakingRef.current = false;
-
-        // If AI already finished and student went silent again, restart timer now
         if (waitingForStudentRef.current) {
           scheduleFollowup("student_speech_stopped");
         }
       }
 
-      // ✅ AI finished speaking -> start follow-up timer
+      // AI finished speaking -> start follow-up timer
       if (
         msg?.type === "output_audio_buffer.stopped" ||
         msg?.type === "response.audio.done" ||
@@ -518,28 +517,30 @@ End with: "Your turn—answer in 1 line."`,
     const prof = levelProfile(selectedLevel);
 
     return `
-You are Amin Sir, a friendly spoken-English teacher for Indian school students (age 10–15).
+You are Amin Sir, a strict spoken-English COACH for Indian school students (Class 4–10).
+
+GOAL (cost saving + learning):
+• Student speaks 80%, you speak 20%.
+• Never lecture. Never long grammar explanations.
+• Speak max 1–2 short lines, then ask a question.
+• After correction, force student to repeat.
 
 SPEED:
-• Speak at normal TEACHER speed (not fast, not slow motion).
-• Use short sentences. 1–2 sentences per turn.
+• Normal teacher speed (not fast, not slow motion).
 
-LANGUAGE MIX (MUST):
-• 80% English + 20% very simple Hindi (Hinglish).
-• Hindi only for quick help/explanation. Keep Hindi very simple.
-
-ANTI-REPEAT (VERY IMPORTANT):
-• Greet only once per session.
+LANGUAGE:
+• 80% English + 20% very simple Hindi only when needed.
 
 LEVEL: ${levelToText(selectedLevel)}
 • Vocabulary: ${prof.vocab}
 • Questions: ${prof.questions}
 • Correction: ${prof.correction}
 
-Conversation:
+RULES:
 • One question at a time.
-• Keep student talking (ask follow-up).
-• If student becomes silent after you finish, gently prompt again with a small hint.
+• Ask a question every turn.
+• Keep output short.
+• If student is silent, give a short prompt and repeat the same question.
 Always respond in AUDIO.
 `.trim();
   }
@@ -564,10 +565,9 @@ Always respond in AUDIO.
 
     setConnected(false);
     connectedRef.current = false;
-
     greetedRef.current = false;
 
-    // reset feature A
+    // reset follow-up
     followupCountRef.current = 0;
     lastFollowupAtRef.current = 0;
     studentSpeakingRef.current = false;
@@ -575,7 +575,7 @@ Always respond in AUDIO.
     waitingForStudentRef.current = false;
     clearFollowupTimer();
 
-    // reset limit trigger
+    // reset limit
     limitTriggeredRef.current = false;
 
     // load today's usage
@@ -604,7 +604,11 @@ Always respond in AUDIO.
           setConnected(true);
           connectedRef.current = true;
           startSessionTimer();
-        } else if (pc.connectionState === "disconnected" || pc.connectionState === "closed" || pc.connectionState === "failed") {
+        } else if (
+          pc.connectionState === "disconnected" ||
+          pc.connectionState === "closed" ||
+          pc.connectionState === "failed"
+        ) {
           stopSessionTimer();
           setConnected(false);
           connectedRef.current = false;
@@ -635,15 +639,21 @@ Always respond in AUDIO.
       dc.onopen = async () => {
         setDcOpen(true);
 
+        // ✅ FIXED session.update (NO invalid nested voice fields)
         sendJSON({
           type: "session.update",
           session: {
             modalities: ["audio", "text"],
-            voice: VOICE,
-            output_audio_format: "pcm16",
-            audio: { output: { voice: VOICE, format: "pcm16" } },
-            turn_detection: { type: "server_vad" },
             instructions: buildTutorInstructions(level),
+
+            // ✅ voice ONLY here
+            voice: VOICE,
+
+            // ✅ safe audio format
+            output_audio_format: "pcm16",
+
+            // ✅ VAD
+            turn_detection: { type: "server_vad" },
           },
         });
 
@@ -660,7 +670,7 @@ Always respond in AUDIO.
                   type: "input_text",
                   text: `Say in AUDIO at normal teacher speed:
 "Hello ${user}! Welcome beta. I am Amin Sir. Level is ${levelToText(level)}.
-Tell me one sentence about your day."`,
+Tell me ONE sentence about your day."`,
                 },
               ],
             },
@@ -700,11 +710,13 @@ Tell me one sentence about your day."`,
       connectedRef.current = true;
 
       setStep(`Today usage: ${usedTodayRef.current.toFixed(1)} / ${DAILY_LIMIT_MINUTES} min (Tap Enable Sound)`);
+
+      // allow start again after connected
+      startLockRef.current = false;
     } catch (e) {
       setStatus("Error");
       setErr(e);
-    } finally {
-      if (!connectedRef.current) startLockRef.current = false;
+      startLockRef.current = false;
     }
   }
 
@@ -1078,7 +1090,7 @@ Keep it short.
           </div>
 
           <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
-            ✅ Auto follow-up FIXED (restarts after speech_stopped) • 🔐 Daily limit ON • 👤 Login required
+            ✅ Auto follow-up ON • 🔐 Daily limit ON • 👤 Login required • 🎙 Voice: {VOICE}
           </div>
         </div>
       </div>
