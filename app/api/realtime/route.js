@@ -1,64 +1,84 @@
 // app/api/realtime/route.js
-export const runtime = "edge";
-
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-    },
-  });
-}
-
-export async function GET() {
-  return json({ ok: true, message: "alive" }, 200);
-}
+export const runtime = "nodejs"; // ✅ IMPORTANT: prevents Edge-runtime crashes on Vercel
 
 export async function POST() {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return json({ error: { message: "OPENAI_API_KEY missing in Vercel (Production)" } }, 500);
+      return Response.json(
+        { error: { message: "Missing OPENAI_API_KEY in environment variables." } },
+        { status: 500 }
+      );
     }
 
+    // ✅ Create a GA Realtime client secret (NO beta headers)
     const r = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      // ✅ REQUIRED: session.type
       body: JSON.stringify({
+        // ✅ Required
         session: {
           type: "realtime",
-          model: "gpt-realtime",
+
+          // Good defaults
+          model: "gpt-4o-realtime-preview",
+          output_modalities: ["audio"],
+          // voice is better controlled from chat/page.js via session.update,
+          // but keeping a safe default here:
+          voice: "alloy",
         },
       }),
     });
 
-    const data = await r.json().catch(() => null);
+    const data = await r.json().catch(() => ({}));
 
     if (!r.ok) {
-      return json(
+      return Response.json(
         {
           error: {
-            message: data?.error?.message || "Failed to create realtime client secret",
-            status: r.status,
-            raw: data,
+            message:
+              data?.error?.message ||
+              `Failed to create realtime client secret (status ${r.status}).`,
+            details: data,
           },
         },
-        500
+        { status: r.status }
       );
     }
 
-    const value = data?.client_secret?.value || data?.value;
+    // ✅ Bulletproof extraction:
+    // OpenAI typically returns: { value: "ek_..." , expires_at: ..., session: {...} }
+    const value =
+      data?.value ||
+      data?.client_secret?.value ||
+      data?.client_secret ||
+      null;
+
     if (!value) {
-      return json({ error: { message: "Token missing in OpenAI response", raw: data } }, 500);
+      return Response.json(
+        {
+          error: {
+            message: "Client secret value missing in response.",
+            details: data,
+          },
+        },
+        { status: 500 }
+      );
     }
 
-    return json({ value }, 200);
-  } catch (e) {
-    return json({ error: { message: e?.message || "Server error" } }, 500);
+    // Your chat/page.js expects { value }
+    return Response.json({ value });
+  } catch (err) {
+    return Response.json(
+      {
+        error: {
+          message: err?.message || "Server error creating realtime client secret.",
+        },
+      },
+      { status: 500 }
+    );
   }
 }
