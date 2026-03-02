@@ -1,83 +1,69 @@
-// app/api/realtime/route.js
-export const runtime = "nodejs"; // ✅ IMPORTANT: prevents Edge-runtime crashes on Vercel
+import { NextResponse } from "next/server";
+
+export const runtime = "nodejs"; // important for Vercel
+
+function pickClientSecretValue(json) {
+  // Different responses may nest the value differently. We handle all.
+  if (typeof json?.value === "string") return json.value;
+  if (typeof json?.client_secret?.value === "string") return json.client_secret.value;
+  if (typeof json?.data?.value === "string") return json.data.value;
+  if (typeof json?.details?.value?.value === "string") return json.details.value.value;
+  if (typeof json?.details?.value === "string") return json.details.value;
+  return null;
+}
 
 export async function POST() {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return Response.json(
-        { error: { message: "Missing OPENAI_API_KEY in environment variables." } },
+      return NextResponse.json(
+        { error: { message: "Missing OPENAI_API_KEY in environment variables" } },
         { status: 500 }
       );
     }
 
-    // ✅ Create a GA Realtime client secret (NO beta headers)
-    const r = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+    // ✅ GA endpoint (NO OpenAI-Beta header)
+    const url = "https://api.openai.com/v1/realtime/client_secrets";
+
+    // ✅ IMPORTANT: DO NOT send session.voice here (GA rejects it)
+    // Keep session minimal; configure voice later via session.update over DataChannel.
+    const payload = {
+      session: {
+        type: "realtime",
+        model: "gpt-4o-realtime-preview",
+      },
+    };
+
+    const r = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        // ✅ Required
-        session: {
-          type: "realtime",
-
-          // Good defaults
-          model: "gpt-4o-realtime-preview",
-          output_modalities: ["audio"],
-          // voice is better controlled from chat/page.js via session.update,
-          // but keeping a safe default here:
-          voice: "alloy",
-        },
-      }),
+      body: JSON.stringify(payload),
     });
 
-    const data = await r.json().catch(() => ({}));
+    const json = await r.json().catch(() => ({}));
 
     if (!r.ok) {
-      return Response.json(
-        {
-          error: {
-            message:
-              data?.error?.message ||
-              `Failed to create realtime client secret (status ${r.status}).`,
-            details: data,
-          },
-        },
+      return NextResponse.json(
+        { error: { message: json?.error?.message || "Failed to create realtime client secret", details: json } },
         { status: r.status }
       );
     }
 
-    // ✅ Bulletproof extraction:
-    // OpenAI typically returns: { value: "ek_..." , expires_at: ..., session: {...} }
-    const value =
-      data?.value ||
-      data?.client_secret?.value ||
-      data?.client_secret ||
-      null;
-
+    const value = pickClientSecretValue(json);
     if (!value) {
-      return Response.json(
-        {
-          error: {
-            message: "Client secret value missing in response.",
-            details: data,
-          },
-        },
+      return NextResponse.json(
+        { error: { message: "Client secret value missing in response", details: json } },
         { status: 500 }
       );
     }
 
-    // Your chat/page.js expects { value }
-    return Response.json({ value });
-  } catch (err) {
-    return Response.json(
-      {
-        error: {
-          message: err?.message || "Server error creating realtime client secret.",
-        },
-      },
+    return NextResponse.json({ value });
+  } catch (e) {
+    return NextResponse.json(
+      { error: { message: e?.message || "Server error", details: String(e) } },
       { status: 500 }
     );
   }
