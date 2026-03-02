@@ -1,51 +1,82 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
-/* ---------------- AUTH ---------------- */
+/** ---------------- Auth ---------------- */
 const AUTH_KEY = "aminsir_auth_v1";
-function getUser() {
+function getAuthUser() {
   try {
     const raw = localStorage.getItem(AUTH_KEY);
     if (!raw) return null;
-    return JSON.parse(raw)?.user || null;
+    const parsed = JSON.parse(raw);
+    const u = (parsed?.user || "").trim();
+    return u || null;
   } catch {
     return null;
   }
 }
 
-/* ---------------- CONFIG ---------------- */
-const VOICE = "marin"; // supported voice name you saw in error list
+/** ---------------- Voice ---------------- */
+// IMPORTANT: use a supported voice (from your list)
+const VOICE = "marin"; // or "cedar"
 
 export default function ChatPage() {
-  const user = getUser();
+  const router = useRouter();
 
+  /** user */
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    const u = getAuthUser();
+    if (!u) {
+      router.replace("/login");
+      return;
+    }
+    setUser(u);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function logout() {
+    try {
+      localStorage.removeItem(AUTH_KEY);
+    } catch {}
+    router.replace("/login");
+  }
+
+  /** ---------------- Realtime refs ---------------- */
+  const pcRef = useRef(null);
+  const dcRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const remoteAudioRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+
+  // mobile unlock fallback
+  const audioCtxRef = useRef(null);
+  const audioSrcRef = useRef(null);
+
+  /** ---------------- UI ---------------- */
   const [status, setStatus] = useState("Idle");
   const [step, setStep] = useState("—");
   const [error, setError] = useState("");
 
   const [dcOpen, setDcOpen] = useState(false);
-  const [gotTrack, setGotTrack] = useState(false);
+  const [gotRemoteTrack, setGotRemoteTrack] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
 
-  const pcRef = useRef(null);
-  const dcRef = useRef(null);
-  const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(null);
+  function setErr(e) {
+    const msg = typeof e === "string" ? e : e?.message || JSON.stringify(e, null, 2);
+    console.error(e);
+    setError(msg);
+  }
 
-  const remoteAudioRef = useRef(null);
-
-  // mobile fallback
-  const audioCtxRef = useRef(null);
-  const audioSrcRef = useRef(null);
-
-  async function getKey() {
+  async function getEphemeralKey() {
     setStep("Fetching key…");
     const r = await fetch("/api/realtime", { method: "POST" });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j?.error?.message || "Failed to fetch key");
-    if (!j?.value) throw new Error("Ephemeral key missing");
-    return j.value;
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data, null, 2));
+    if (!data?.value) throw new Error("Ephemeral key missing from response");
+    return data.value;
   }
 
   function sendJSON(obj) {
@@ -54,10 +85,11 @@ export default function ChatPage() {
     dc.send(JSON.stringify(obj));
   }
 
-  async function enableSound() {
+  /** ---------------- Enable Sound (mobile unlock) ---------------- */
+  async function enableSoundStrong() {
     setError("");
     try {
-      // 1) unlock <audio>
+      // 1) unlock <audio> play
       const el = remoteAudioRef.current;
       if (el) {
         el.muted = false;
@@ -67,13 +99,12 @@ export default function ChatPage() {
         if (p && typeof p.then === "function") await p;
       }
 
-      // 2) unlock AudioContext (mobile)
+      // 2) unlock AudioContext (best for mobile)
       const AC = window.AudioContext || window.webkitAudioContext;
       if (AC) {
         if (!audioCtxRef.current) audioCtxRef.current = new AC();
         if (audioCtxRef.current.state === "suspended") await audioCtxRef.current.resume();
 
-        // connect remote stream if we already have it
         if (remoteStreamRef.current) {
           try {
             if (audioSrcRef.current) audioSrcRef.current.disconnect();
@@ -89,20 +120,23 @@ export default function ChatPage() {
       setStep("Sound enabled ✅");
     } catch (e) {
       setSoundEnabled(false);
-      setError(e?.message || String(e));
+      setErr(e);
     }
   }
 
+  /** ---------------- Start Voice ---------------- */
   async function startVoice() {
+    if (!user) return;
+
     setError("");
-    setGotTrack(false);
-    setDcOpen(false);
-    setSoundEnabled(false);
     setStatus("Connecting…");
     setStep("Starting…");
+    setDcOpen(false);
+    setGotRemoteTrack(false);
+    setSoundEnabled(false);
 
     try {
-      const key = await getKey();
+      const key = await getEphemeralKey();
 
       setStep("Creating peer…");
       const pc = new RTCPeerConnection({
@@ -114,42 +148,36 @@ export default function ChatPage() {
         setStatus(`PC: ${pc.connectionState}`);
       };
 
-      pc.ontrack = (e) => {
-        setGotTrack(true);
-
+      pc.ontrack = async (e) => {
+        setGotRemoteTrack(true);
         const stream = e.streams?.[0];
-        if (stream) {
-          remoteStreamRef.current = stream;
+        if (stream) remoteStreamRef.current = stream;
 
-          // attach to <audio>
-          const el = remoteAudioRef.current;
-          if (el) el.srcObject = stream;
+        const el = remoteAudioRef.current;
+        if (el && stream) {
+          el.srcObject = stream;
+          el.muted = false;
+          el.volume = 1;
+          try {
+            await el.play();
+          } catch {}
+        }
 
-          // if sound already enabled, try play again
-          if (soundEnabled) {
-            el?.play?.().catch(() => {});
-          }
-
-          // if AudioContext already created, connect it
-          if (audioCtxRef.current && stream) {
-            try {
-              if (audioSrcRef.current) audioSrcRef.current.disconnect();
-            } catch {}
-            try {
-              audioSrcRef.current = audioCtxRef.current.createMediaStreamSource(stream);
-              audioSrcRef.current.connect(audioCtxRef.current.destination);
-            } catch {}
-          }
+        // If user already enabled sound, also connect AudioContext
+        if (soundEnabled) {
+          try {
+            await enableSoundStrong();
+          } catch {}
         }
       };
 
-      // make sure we can receive audio
+      // Ensure we can receive audio
       pc.addTransceiver("audio", { direction: "sendrecv" });
 
       setStep("Requesting microphone…");
-      const local = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStreamRef.current = local;
-      local.getTracks().forEach((t) => pc.addTrack(t, local));
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      localStreamRef.current = stream;
+      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 
       setStep("Creating DataChannel…");
       const dc = pc.createDataChannel("oai-events");
@@ -157,21 +185,20 @@ export default function ChatPage() {
 
       dc.onopen = () => {
         setDcOpen(true);
-        setStep("DC open ✅ (Tap Enable Sound)");
 
-        // IMPORTANT: GA format (do NOT send session.voice)
+        // Keep session.update minimal & safe (no session.voice!)
         sendJSON({
           type: "session.update",
           session: {
             modalities: ["audio", "text"],
             instructions: `You are Amin Sir, a friendly spoken-English teacher.
-Speak at normal teacher speed.
-Use 80% English + 20% very simple Hindi.
-Ask one question then WAIT.`,
+Speak at normal teacher speed (not fast).
+Use 80% English + 20% simple Hindi.
+Ask 1 question then WAIT for student answer.`,
           },
         });
 
-        // Force the assistant to speak right away
+        // Force first audio output immediately
         sendJSON({
           type: "conversation.item.create",
           item: {
@@ -186,20 +213,17 @@ Ask one question then WAIT.`,
           },
         });
 
-        // Some builds accept voice here; if it errors, remove "voice"
+        // Some builds accept voice here; if it errors, remove voice line later
         sendJSON({
           type: "response.create",
-          response: {
-            modalities: ["audio"],
-            // If your account supports voice selection here, it will use it.
-            // If it throws error, delete this line.
-            voice: VOICE,
-          },
+          response: { modalities: ["audio"], voice: VOICE },
         });
+
+        setStep("Connected. Now tap Enable Sound 🔊 (important on mobile)");
       };
 
       dc.onmessage = (ev) => {
-        // helps debugging: if server complains, you will see message in UI
+        // show server errors if any
         try {
           const msg = JSON.parse(ev.data);
           if (msg?.type?.includes("error") || msg?.error) {
@@ -213,7 +237,7 @@ Ask one question then WAIT.`,
       await pc.setLocalDescription(offer);
 
       setStep("Sending SDP…");
-      const res = await fetch("https://api.openai.com/v1/realtime/calls", {
+      const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${key}`,
@@ -223,56 +247,82 @@ Ask one question then WAIT.`,
         body: offer.sdp,
       });
 
-      const answer = await res.text().catch(() => "");
-      if (!res.ok) throw new Error(answer || `SDP failed (${res.status})`);
+      const answer = await sdpResponse.text().catch(() => "");
+      if (!sdpResponse.ok) throw new Error(answer || `SDP exchange failed (${sdpResponse.status})`);
 
       setStep("Applying answer…");
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
 
       setStatus("Connected ✅");
-      setStep("Now tap Enable Sound 🔊 (important on mobile)");
     } catch (e) {
       setStatus("Error");
-      setError(e?.message || String(e));
+      setErr(e);
     }
   }
 
-  function stop() {
+  /** ---------------- Stop ---------------- */
+  function stopAll() {
+    setStep("Closing…");
+    setStatus("Closing…");
+
     try {
-      dcRef.current?.close?.();
-    } catch {}
-    try {
-      pcRef.current?.close?.();
-    } catch {}
-    try {
-      localStreamRef.current?.getTracks?.().forEach((t) => t.stop());
-    } catch {}
-    try {
-      remoteAudioRef.current?.pause?.();
-      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+        localStreamRef.current = null;
+      }
+      if (dcRef.current) {
+        try {
+          dcRef.current.close();
+        } catch {}
+        dcRef.current = null;
+      }
+      if (pcRef.current) {
+        try {
+          pcRef.current.close();
+        } catch {}
+        pcRef.current = null;
+      }
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.pause?.();
+        remoteAudioRef.current.srcObject = null;
+      }
     } catch {}
 
+    setDcOpen(false);
+    setGotRemoteTrack(false);
+    setSoundEnabled(false);
     setStatus("Stopped");
     setStep("—");
-    setDcOpen(false);
-    setGotTrack(false);
-    setSoundEnabled(false);
   }
 
-  useEffect(() => () => stop(), []);
+  useEffect(() => {
+    return () => stopAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  if (!user) return <div style={{ padding: 20 }}>Please login</div>;
+  if (!user) return <div style={{ padding: 18, fontFamily: "system-ui, Arial" }}>Loading…</div>;
 
   return (
-    <div style={{ maxWidth: 780, margin: "0 auto", padding: 18, fontFamily: "system-ui, Arial" }}>
-      <h2 style={{ margin: "8px 0" }}>Amin Sir AI Tutor</h2>
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: 16, paddingBottom: 50, fontFamily: "system-ui, Arial" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <h2 style={{ margin: "8px 0 8px" }}>Amin Sir AI Tutor</h2>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 900 }}>User: {user}</div>
+          <button onClick={logout} style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #ddd", fontWeight: 900 }}>
+            Logout
+          </button>
+        </div>
+      </div>
 
       <div style={{ fontWeight: 800, marginBottom: 6 }}>Status: {status}</div>
-      <div style={{ fontWeight: 800, marginBottom: 12 }}>Step: {step}</div>
-
+      <div style={{ fontWeight: 800, marginBottom: 6 }}>Step: {step}</div>
       <div style={{ fontWeight: 800, marginBottom: 12 }}>
-        DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotTrack ? "Yes ✅" : "No"} | Sound:{" "}
-        {soundEnabled ? "Enabled ✅" : "Locked"}
+        DC: {dcOpen ? "Open ✅" : "Not open"} | Track: {gotRemoteTrack ? "Yes ✅" : "No"} | Sound:{" "}
+        {soundEnabled ? "Enabled ✅" : "Locked"} | Voice: {VOICE}
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -284,14 +334,20 @@ Ask one question then WAIT.`,
         </button>
 
         <button
-          onClick={enableSound}
-          style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: soundEnabled ? "#eaffea" : "#fff", fontWeight: 900 }}
+          onClick={enableSoundStrong}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            background: soundEnabled ? "#eaffea" : "#fff",
+            fontWeight: 900,
+          }}
         >
           Enable Sound 🔊 {soundEnabled ? "✅" : ""}
         </button>
 
         <button
-          onClick={stop}
+          onClick={stopAll}
           style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid #ddd", background: "#fff", fontWeight: 900 }}
         >
           Stop
