@@ -13,9 +13,6 @@ export default function ChatPage() {
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [elapsed, setElapsed] = useState(0);
 
-  const [lastEvent, setLastEvent] = useState(null);
-  const [eventLog, setEventLog] = useState([]);
-
   const pcRef = useRef(null);
   const dcRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -99,21 +96,13 @@ export default function ChatPage() {
     return () => safeClose();
   }, [safeClose]);
 
-  const pushEvent = (obj) => {
-    setLastEvent(obj);
-    setEventLog((prev) => {
-      const next = [{ t: new Date().toLocaleTimeString(), type: obj?.type || "?" }, ...prev];
-      return next.slice(0, 12);
-    });
-  };
-
   const dcSend = (obj) => {
     const dc = dcRef.current;
     if (!dc || dc.readyState !== "open") return;
     dc.send(JSON.stringify(obj));
   };
 
-  // ✅ Enable sound button (manual unlock)
+  // ✅ Enable sound button (manual unlock for strict browsers)
   const enableSound = async () => {
     try {
       if (!audioRef.current) return;
@@ -127,15 +116,13 @@ export default function ChatPage() {
 
   const startVoice = async () => {
     try {
-      setLastEvent(null);
-      setEventLog([]);
       setPcStatus("connecting");
       setElapsed(0);
       setSoundEnabled(false);
       setTrackYes(false);
       setDcStatus("closed");
 
-      // 1) Get GA client secret from backend
+      // 1) Get GA client secret
       const r = await fetch("/api/realtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -151,14 +138,12 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
       const data = await r.json();
       if (!r.ok) {
         setPcStatus("error");
-        setLastEvent(data);
         return;
       }
 
       const ephemeralKey = data?.client_secret?.value;
       if (!ephemeralKey) {
         setPcStatus("error");
-        setLastEvent({ type: "error", message: "No client_secret.value returned", data });
         return;
       }
 
@@ -179,11 +164,11 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
       localStreamRef.current = localStream;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
-      // 4) Remote audio
+      // 4) Remote audio stream
       const remoteStream = new MediaStream();
       remoteStreamRef.current = remoteStream;
 
-      // ✅ IMPORTANT FIX: Auto play when track arrives
+      // ✅ Auto play when remote track arrives
       pc.ontrack = async (event) => {
         setTrackYes(true);
 
@@ -191,13 +176,11 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
 
         if (audioRef.current) {
           audioRef.current.srcObject = remoteStream;
-
           try {
             await audioRef.current.play();
             setSoundEnabled(true);
-          } catch (err) {
-            // Browser may still require user click on some devices
-            console.log("Autoplay blocked until user interaction.");
+          } catch {
+            // If autoplay blocked, student can tap Enable Sound
           }
         }
       };
@@ -210,7 +193,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         setDcStatus("open");
         startTimer();
 
-        // ✅ For WebRTC: do not set output format; just voice + audio modality
+        // Session settings
         dcSend({
           type: "session.update",
           session: {
@@ -225,7 +208,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
           },
         });
 
-        // ✅ Add user message
+        // Initial greeting prompt
         dcSend({
           type: "conversation.item.create",
           item: {
@@ -240,31 +223,10 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
           },
         });
 
-        // ✅ Force audio response
         dcSend({
           type: "response.create",
           response: { output_modalities: ["audio"] },
         });
-      };
-
-      dc.onmessage = (msg) => {
-        try {
-          const obj = JSON.parse(msg.data);
-
-          // show lifecycle events
-          if (
-            obj?.type?.startsWith("response.") ||
-            obj?.type?.startsWith("session.") ||
-            obj?.type?.startsWith("conversation.") ||
-            obj?.type === "error"
-          ) {
-            pushEvent(obj);
-          }
-
-          if (obj?.type === "error" || obj?.error) {
-            setLastEvent(obj);
-          }
-        } catch {}
       };
 
       // 6) SDP exchange (GA)
@@ -283,14 +245,12 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
       const answerSdp = await sdpResp.text();
       if (!sdpResp.ok) {
         setPcStatus("error");
-        setLastEvent({ type: "error", status: sdpResp.status, details: answerSdp });
         return;
       }
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-    } catch (e) {
+    } catch {
       setPcStatus("error");
-      setLastEvent({ type: "error", message: String(e?.message || e) });
     }
   };
 
@@ -327,7 +287,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
       </div>
 
       <div style={{ marginTop: 14, fontSize: 20, fontWeight: 900 }}>
-        Step: Connected. Now tap Enable Sound 🔊 (important on mobile)
+        Step: Tap Enable Sound 🔊 (important on mobile)
       </div>
 
       <div style={{ marginTop: 10, fontSize: 18, fontWeight: 800 }}>
@@ -383,31 +343,11 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         </button>
       </div>
 
-      <div
-        style={{
-          marginTop: 20,
-          padding: 18,
-          borderRadius: 16,
-          border: "1px solid #f3c4c4",
-          background: "#fdecec",
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-          whiteSpace: "pre-wrap",
-          minHeight: 140,
-        }}
-      >
-        {lastEvent ? JSON.stringify(lastEvent, null, 2) : "No error."}
-      </div>
+      {/* Hidden audio element for live WebRTC stream */}
+      <audio ref={audioRef} />
 
-      <div style={{ marginTop: 10, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
-        <b>Event log (latest):</b>
-        <div style={{ marginTop: 6, opacity: 0.9 }}>
-          {eventLog.length ? eventLog.map((e, i) => <div key={i}>{e.t} — {e.type}</div>) : "No events yet."}
-        </div>
-      </div>
-
-      <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 14 }}>
-        <audio ref={audioRef} controls />
-        <div style={{ fontWeight: 900, fontSize: 18 }}>{formatTime(elapsed)}</div>
+      <div style={{ marginTop: 16, fontWeight: 900, fontSize: 18 }}>
+        Session Time: {formatTime(elapsed)}
       </div>
     </div>
   );
