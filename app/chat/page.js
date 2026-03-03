@@ -7,12 +7,14 @@ export default function ChatPage() {
   const router = useRouter();
 
   const [userName, setUserName] = useState("");
-  const [pcStatus, setPcStatus] = useState("idle");
-  const [dcStatus, setDcStatus] = useState("closed");
+  const [pcStatus, setPcStatus] = useState("idle"); // idle | connecting | connected | error | closed
+  const [dcStatus, setDcStatus] = useState("closed"); // open | closed
   const [trackYes, setTrackYes] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
-  const [lastEvent, setLastEvent] = useState(null);
   const [elapsed, setElapsed] = useState(0);
+
+  const [lastEvent, setLastEvent] = useState(null);
+  const [eventLog, setEventLog] = useState([]); // last ~12 events
 
   const pcRef = useRef(null);
   const dcRef = useRef(null);
@@ -21,6 +23,7 @@ export default function ChatPage() {
   const audioRef = useRef(null);
   const timerRef = useRef(null);
 
+  // ✅ PIN login session check
   useEffect(() => {
     const raw = localStorage.getItem("aminsir_user");
     if (!raw) {
@@ -64,29 +67,45 @@ export default function ChatPage() {
         try { dcRef.current.close(); } catch {}
         dcRef.current = null;
       }
+
       if (pcRef.current) {
         try { pcRef.current.close(); } catch {}
         pcRef.current = null;
       }
+
       if (localStreamRef.current) {
         try { localStreamRef.current.getTracks().forEach((t) => t.stop()); } catch {}
         localStreamRef.current = null;
       }
+
       if (audioRef.current) {
         try {
           audioRef.current.pause();
           audioRef.current.srcObject = null;
         } catch {}
       }
+
       remoteStreamRef.current = null;
     } catch {}
   }, []);
 
   useEffect(() => {
-    return () => {
-      safeClose();
-    };
+    return () => safeClose();
   }, [safeClose]);
+
+  const pushEvent = (obj) => {
+    setLastEvent(obj);
+    setEventLog((prev) => {
+      const next = [{ t: new Date().toLocaleTimeString(), type: obj?.type || "?" }, ...prev];
+      return next.slice(0, 12);
+    });
+  };
+
+  const dcSend = (obj) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== "open") return;
+    dc.send(JSON.stringify(obj));
+  };
 
   const enableSound = async () => {
     try {
@@ -99,19 +118,14 @@ export default function ChatPage() {
     }
   };
 
-  const dcSend = (obj) => {
-    const dc = dcRef.current;
-    if (!dc || dc.readyState !== "open") return;
-    dc.send(JSON.stringify(obj));
-  };
-
   const startVoice = async () => {
     try {
       setLastEvent(null);
+      setEventLog([]);
       setPcStatus("connecting");
       setElapsed(0);
 
-      // 1) Get client secret
+      // 1) Get GA client secret from backend
       const r = await fetch("/api/realtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -138,7 +152,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         return;
       }
 
-      // 2) PeerConnection
+      // 2) Create PeerConnection
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
@@ -150,12 +164,12 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         if (pc.connectionState === "closed") setPcStatus("closed");
       };
 
-      // mic
+      // 3) Microphone
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = localStream;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
-      // remote audio
+      // 4) Remote audio stream
       const remoteStream = new MediaStream();
       remoteStreamRef.current = remoteStream;
 
@@ -165,7 +179,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         if (audioRef.current) audioRef.current.srcObject = remoteStream;
       };
 
-      // data channel
+      // 5) Data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
@@ -173,17 +187,23 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         setDcStatus("open");
         startTimer();
 
-        // ✅ Make session explicitly audio output
+        // ✅ IMPORTANT: For WebRTC, do NOT set audio.output.format
+        // Just set voice + output_modalities
         dcSend({
           type: "session.update",
           session: {
             type: "realtime",
+            model: "gpt-realtime",
             output_modalities: ["audio"],
             audio: { output: { voice: "marin" } },
+            instructions:
+              `You are Amin Sir AI Voice Tutor. Student name is ${userName}.
+Speak mostly English and use simple Hindi only when needed (80/20).
+Keep answers short. Ask the student to speak more. Correct gently and continue.`,
           },
         });
 
-        // ✅ Add a user message into conversation
+        // ✅ Add a user text message
         dcSend({
           type: "conversation.item.create",
           item: {
@@ -192,31 +212,43 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
             content: [
               {
                 type: "input_text",
-                text: `Start now. Greet ${userName} warmly as Amin Sir and ask one very simple English speaking question.`,
+                text: `Greet ${userName} warmly as Amin Sir and ask ONE simple English speaking question.`,
               },
             ],
           },
         });
 
-        // ✅ Now ask model to respond (audio)
-        dcSend({ type: "response.create" });
+        // ✅ Force an AUDIO response
+        dcSend({
+          type: "response.create",
+          response: {
+            output_modalities: ["audio"],
+          },
+        });
       };
 
       dc.onmessage = (msg) => {
         try {
           const obj = JSON.parse(msg.data);
 
-          // show important events for debugging
+          // show lifecycle events so we can confirm response is happening
+          if (
+            obj?.type?.startsWith("response.") ||
+            obj?.type?.startsWith("session.") ||
+            obj?.type?.startsWith("conversation.") ||
+            obj?.type === "error"
+          ) {
+            pushEvent(obj);
+          }
+
+          // show errors always
           if (obj?.type === "error" || obj?.error) {
             setLastEvent(obj);
           }
-
-          // Optional: show other events too
-          // setLastEvent(obj);
         } catch {}
       };
 
-      // SDP exchange (GA)
+      // 6) SDP exchange (GA)
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -238,7 +270,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
-      // if already enabled sound, try play
+      // If user already enabled sound, try play
       if (soundEnabled && audioRef.current) {
         try { await audioRef.current.play(); } catch {}
       }
@@ -350,6 +382,13 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         }}
       >
         {lastEvent ? JSON.stringify(lastEvent, null, 2) : "No error."}
+      </div>
+
+      <div style={{ marginTop: 10, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+        <b>Event log (latest):</b>
+        <div style={{ marginTop: 6, opacity: 0.9 }}>
+          {eventLog.length ? eventLog.map((e, i) => <div key={i}>{e.t} — {e.type}</div>) : "No events yet."}
+        </div>
       </div>
 
       <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 14 }}>
