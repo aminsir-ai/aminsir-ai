@@ -116,7 +116,7 @@ export default function ChatPage() {
       setPcStatus("connecting");
       setElapsed(0);
 
-      // 1) Get ephemeral key from your server (client_secret.value)
+      // 1) Get GA client secret from your server
       const r = await fetch("/api/realtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -183,14 +183,20 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         setDcStatus("open");
         startTimer();
 
-        // ✅ IMPORTANT: no response.modalities anywhere
-        dc.send(JSON.stringify({ type: "session.update", session: {} }));
+        // ✅ IMPORTANT: GA requires session.type here
+        dc.send(
+          JSON.stringify({
+            type: "session.update",
+            session: { type: "realtime" },
+          })
+        );
 
+        // ✅ No response.modalities anywhere
         dc.send(
           JSON.stringify({
             type: "response.create",
             response: {
-              instructions: `Say: "Hello ${userName}! Let's start speaking practice." Then ask one simple question.`,
+              instructions: `Say: "Hello ${userName}! Let's start speaking practice." Then ask ONE simple question.`,
             },
           })
         );
@@ -203,7 +209,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         } catch {}
       };
 
-      // 6) SDP exchange with GA endpoint ✅ + OpenAI-Beta header ✅
+      // 6) SDP exchange with GA endpoint ✅ (NO OpenAI-Beta header!)
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -212,7 +218,6 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         headers: {
           Authorization: `Bearer ${ephemeralKey}`,
           "Content-Type": "application/sdp",
-          "OpenAI-Beta": "realtime=v1",
         },
         body: offer.sdp,
       });
@@ -226,7 +231,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
-      // if already enabled sound, try play
+      // If already enabled sound, try play
       if (soundEnabled && audioRef.current) {
         try {
           await audioRef.current.play();
