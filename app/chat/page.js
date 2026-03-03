@@ -21,7 +21,7 @@ export default function ChatPage() {
   const audioRef = useRef(null);
   const timerRef = useRef(null);
 
-  // ✅ Check PIN-login session (localStorage)
+  // ✅ PIN-login session check
   useEffect(() => {
     const raw = localStorage.getItem("aminsir_user");
     if (!raw) {
@@ -95,11 +95,10 @@ export default function ChatPage() {
 
   const enableSound = async () => {
     try {
-      if (audioRef.current) {
-        if (remoteStreamRef.current) audioRef.current.srcObject = remoteStreamRef.current;
-        await audioRef.current.play();
-        setSoundEnabled(true);
-      }
+      if (!audioRef.current) return;
+      if (remoteStreamRef.current) audioRef.current.srcObject = remoteStreamRef.current;
+      await audioRef.current.play();
+      setSoundEnabled(true);
     } catch {
       setSoundEnabled(false);
     }
@@ -111,37 +110,51 @@ export default function ChatPage() {
       setPcStatus("connecting");
       setElapsed(0);
 
-      // Get ephemeral key from your server
-      const r = await fetch("/api/realtime", { method: "POST" });
-      const data = await r.json();
+      // 1) Get ephemeral key from your server
+      const r = await fetch("/api/realtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          voice: "marin",
+          instructions:
+            `You are Amin Sir AI Voice Tutor. Student name is ${userName}.
+Speak mostly English and use simple Hindi only when needed (80/20).
+Keep it short. Ask the student to speak more. Correct gently and continue.`,
+        }),
+      });
 
+      const data = await r.json();
       if (!r.ok) {
         setPcStatus("error");
         setLastEvent(data);
         return;
       }
 
-      const key = data?.client_secret?.value;
-      if (!key) {
+      const ephemeralKey = data?.client_secret?.value;
+      if (!ephemeralKey) {
         setPcStatus("error");
         setLastEvent({ type: "error", message: "No client_secret.value returned", data });
         return;
       }
 
-      const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      // 2) Create PeerConnection
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
       pcRef.current = pc;
 
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === "connected") setPcStatus("connected");
         if (pc.connectionState === "failed" || pc.connectionState === "disconnected") setPcStatus("error");
+        if (pc.connectionState === "closed") setPcStatus("closed");
       };
 
-      // mic
+      // 3) Microphone
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = localStream;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
-      // remote audio
+      // 4) Remote audio
       const remoteStream = new MediaStream();
       remoteStreamRef.current = remoteStream;
 
@@ -151,7 +164,7 @@ export default function ChatPage() {
         if (audioRef.current) audioRef.current.srcObject = remoteStream;
       };
 
-      // data channel
+      // 5) Data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
@@ -159,14 +172,14 @@ export default function ChatPage() {
         setDcStatus("open");
         startTimer();
 
-        // ✅ IMPORTANT: no response.modalities anywhere
+        // ✅ IMPORTANT: No response.modalities anywhere
         dc.send(JSON.stringify({ type: "session.update", session: {} }));
 
         dc.send(
           JSON.stringify({
             type: "response.create",
             response: {
-              instructions: `Student name is ${userName}. Greet the student and ask a simple English speaking question.`,
+              instructions: `Say: "Hello ${userName}! Let's start speaking practice." Then ask one simple question.`,
             },
           })
         );
@@ -179,21 +192,18 @@ export default function ChatPage() {
         } catch {}
       };
 
-      // offer/answer exchange
+      // 6) SDP exchange with GA endpoint ✅
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      const sdpResp = await fetch(
-        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/sdp",
-          },
-          body: offer.sdp,
-        }
-      );
+      const sdpResp = await fetch("https://api.openai.com/v1/realtime/calls", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ephemeralKey}`,
+          "Content-Type": "application/sdp",
+        },
+        body: offer.sdp,
+      });
 
       const answerSdp = await sdpResp.text();
       if (!sdpResp.ok) {
