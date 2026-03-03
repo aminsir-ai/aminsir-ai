@@ -7,8 +7,8 @@ export default function ChatPage() {
   const router = useRouter();
 
   const [userName, setUserName] = useState("");
-  const [pcStatus, setPcStatus] = useState("idle"); // idle | connecting | connected | error | closed
-  const [dcStatus, setDcStatus] = useState("closed"); // open | closed
+  const [pcStatus, setPcStatus] = useState("idle");
+  const [dcStatus, setDcStatus] = useState("closed");
   const [trackYes, setTrackYes] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [lastEvent, setLastEvent] = useState(null);
@@ -21,7 +21,6 @@ export default function ChatPage() {
   const audioRef = useRef(null);
   const timerRef = useRef(null);
 
-  // ✅ PIN login session check
   useEffect(() => {
     const raw = localStorage.getItem("aminsir_user");
     if (!raw) {
@@ -62,33 +61,23 @@ export default function ChatPage() {
       setPcStatus("closed");
 
       if (dcRef.current) {
-        try {
-          dcRef.current.close();
-        } catch {}
+        try { dcRef.current.close(); } catch {}
         dcRef.current = null;
       }
-
       if (pcRef.current) {
-        try {
-          pcRef.current.close();
-        } catch {}
+        try { pcRef.current.close(); } catch {}
         pcRef.current = null;
       }
-
       if (localStreamRef.current) {
-        try {
-          localStreamRef.current.getTracks().forEach((t) => t.stop());
-        } catch {}
+        try { localStreamRef.current.getTracks().forEach((t) => t.stop()); } catch {}
         localStreamRef.current = null;
       }
-
       if (audioRef.current) {
         try {
           audioRef.current.pause();
           audioRef.current.srcObject = null;
         } catch {}
       }
-
       remoteStreamRef.current = null;
     } catch {}
   }, []);
@@ -110,13 +99,19 @@ export default function ChatPage() {
     }
   };
 
+  const dcSend = (obj) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== "open") return;
+    dc.send(JSON.stringify(obj));
+  };
+
   const startVoice = async () => {
     try {
       setLastEvent(null);
       setPcStatus("connecting");
       setElapsed(0);
 
-      // 1) Get GA client secret from your server
+      // 1) Get client secret
       const r = await fetch("/api/realtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -125,12 +120,11 @@ export default function ChatPage() {
           instructions:
             `You are Amin Sir AI Voice Tutor. Student name is ${userName}.
 Speak mostly English and use simple Hindi only when needed (80/20).
-Keep it short. Ask the student to speak more. Correct gently and continue.`,
+Keep answers short. Ask the student to speak more. Correct gently and continue.`,
         }),
       });
 
       const data = await r.json();
-
       if (!r.ok) {
         setPcStatus("error");
         setLastEvent(data);
@@ -140,11 +134,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
       const ephemeralKey = data?.client_secret?.value;
       if (!ephemeralKey) {
         setPcStatus("error");
-        setLastEvent({
-          type: "error",
-          message: "No client_secret.value returned",
-          data,
-        });
+        setLastEvent({ type: "error", message: "No client_secret.value returned", data });
         return;
       }
 
@@ -160,12 +150,12 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         if (pc.connectionState === "closed") setPcStatus("closed");
       };
 
-      // 3) Mic
+      // mic
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = localStream;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
-      // 4) Remote audio stream
+      // remote audio
       const remoteStream = new MediaStream();
       remoteStreamRef.current = remoteStream;
 
@@ -175,7 +165,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         if (audioRef.current) audioRef.current.srcObject = remoteStream;
       };
 
-      // 5) Data channel
+      // data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
@@ -183,33 +173,50 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         setDcStatus("open");
         startTimer();
 
-        // ✅ IMPORTANT: GA requires session.type here
-        dc.send(
-          JSON.stringify({
-            type: "session.update",
-            session: { type: "realtime" },
-          })
-        );
+        // ✅ Make session explicitly audio output
+        dcSend({
+          type: "session.update",
+          session: {
+            type: "realtime",
+            output_modalities: ["audio"],
+            audio: { output: { voice: "marin" } },
+          },
+        });
 
-        // ✅ No response.modalities anywhere
-        dc.send(
-          JSON.stringify({
-            type: "response.create",
-            response: {
-              instructions: `Say: "Hello ${userName}! Let's start speaking practice." Then ask ONE simple question.`,
-            },
-          })
-        );
+        // ✅ Add a user message into conversation
+        dcSend({
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `Start now. Greet ${userName} warmly as Amin Sir and ask one very simple English speaking question.`,
+              },
+            ],
+          },
+        });
+
+        // ✅ Now ask model to respond (audio)
+        dcSend({ type: "response.create" });
       };
 
       dc.onmessage = (msg) => {
         try {
           const obj = JSON.parse(msg.data);
-          if (obj?.type === "error" || obj?.error) setLastEvent(obj);
+
+          // show important events for debugging
+          if (obj?.type === "error" || obj?.error) {
+            setLastEvent(obj);
+          }
+
+          // Optional: show other events too
+          // setLastEvent(obj);
         } catch {}
       };
 
-      // 6) SDP exchange with GA endpoint ✅ (NO OpenAI-Beta header!)
+      // SDP exchange (GA)
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -231,11 +238,9 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
-      // If already enabled sound, try play
+      // if already enabled sound, try play
       if (soundEnabled && audioRef.current) {
-        try {
-          await audioRef.current.play();
-        } catch {}
+        try { await audioRef.current.play(); } catch {}
       }
     } catch (e) {
       setPcStatus("error");
