@@ -116,7 +116,7 @@ export default function ChatPage() {
       setPcStatus("connecting");
       setElapsed(0);
 
-      // 1) Get ephemeral key (normalized to client_secret.value)
+      // 1) Get ephemeral key from your server (client_secret.value)
       const r = await fetch("/api/realtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -165,7 +165,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
       localStreamRef.current = localStream;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
-      // 4) Remote audio
+      // 4) Remote audio stream
       const remoteStream = new MediaStream();
       remoteStreamRef.current = remoteStream;
 
@@ -203,7 +203,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         } catch {}
       };
 
-      // 6) SDP exchange using GA endpoint ✅
+      // 6) SDP exchange with GA endpoint ✅ + OpenAI-Beta header ✅
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -212,6 +212,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         headers: {
           Authorization: `Bearer ${ephemeralKey}`,
           "Content-Type": "application/sdp",
+          "OpenAI-Beta": "realtime=v1",
         },
         body: offer.sdp,
       });
@@ -225,6 +226,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
+      // if already enabled sound, try play
       if (soundEnabled && audioRef.current) {
         try {
           await audioRef.current.play();
