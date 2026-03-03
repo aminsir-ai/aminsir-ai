@@ -26,7 +26,7 @@ export async function POST(req) {
       `You are Amin Sir AI Voice Tutor. Speak mostly English and use simple Hindi only when needed (80% English, 20% Hindi).
 Keep replies short and practical. Ask the student to speak more (student 70-80% talking). Correct gently and continue.`;
 
-    // ✅ GA expects { session: {...} }
+    // ✅ GA client_secrets expects { session: {...} }
     const payload = {
       session: {
         type: "realtime",
@@ -60,10 +60,31 @@ Keep replies short and practical. Ask the student to speak more (student 70-80% 
       );
     }
 
-    return NextResponse.json(data, { status: 200 });
+    // ✅ Normalize output so frontend ALWAYS gets client_secret.value
+    const clientSecretValue = data?.client_secret?.value || data?.value;
+    const expiresAt = data?.client_secret?.expires_at || data?.expires_at;
+
+    if (!clientSecretValue) {
+      return NextResponse.json(
+        { error: "No client secret returned from OpenAI", raw: data },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        client_secret: { value: clientSecretValue },
+        expires_at: expiresAt,
+        session: data?.session || null,
+      },
+      { status: 200 }
+    );
   } catch (err) {
     return NextResponse.json(
-      { error: "Server error in /api/realtime", details: String(err?.message || err) },
+      {
+        error: "Server error in /api/realtime",
+        details: String(err?.message || err),
+      },
       { status: 500 }
     );
   }

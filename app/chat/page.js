@@ -21,7 +21,7 @@ export default function ChatPage() {
   const audioRef = useRef(null);
   const timerRef = useRef(null);
 
-  // ✅ PIN-login session check
+  // ✅ PIN login session check
   useEffect(() => {
     const raw = localStorage.getItem("aminsir_user");
     if (!raw) {
@@ -62,12 +62,16 @@ export default function ChatPage() {
       setPcStatus("closed");
 
       if (dcRef.current) {
-        try { dcRef.current.close(); } catch {}
+        try {
+          dcRef.current.close();
+        } catch {}
         dcRef.current = null;
       }
 
       if (pcRef.current) {
-        try { pcRef.current.close(); } catch {}
+        try {
+          pcRef.current.close();
+        } catch {}
         pcRef.current = null;
       }
 
@@ -90,7 +94,9 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    return () => safeClose();
+    return () => {
+      safeClose();
+    };
   }, [safeClose]);
 
   const enableSound = async () => {
@@ -110,7 +116,7 @@ export default function ChatPage() {
       setPcStatus("connecting");
       setElapsed(0);
 
-      // 1) Get ephemeral key from your server
+      // 1) Get ephemeral key (normalized to client_secret.value)
       const r = await fetch("/api/realtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -124,6 +130,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
       });
 
       const data = await r.json();
+
       if (!r.ok) {
         setPcStatus("error");
         setLastEvent(data);
@@ -133,11 +140,15 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
       const ephemeralKey = data?.client_secret?.value;
       if (!ephemeralKey) {
         setPcStatus("error");
-        setLastEvent({ type: "error", message: "No client_secret.value returned", data });
+        setLastEvent({
+          type: "error",
+          message: "No client_secret.value returned",
+          data,
+        });
         return;
       }
 
-      // 2) Create PeerConnection
+      // 2) PeerConnection
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
@@ -149,7 +160,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         if (pc.connectionState === "closed") setPcStatus("closed");
       };
 
-      // 3) Microphone
+      // 3) Mic
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = localStream;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
@@ -172,7 +183,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         setDcStatus("open");
         startTimer();
 
-        // ✅ IMPORTANT: No response.modalities anywhere
+        // ✅ IMPORTANT: no response.modalities anywhere
         dc.send(JSON.stringify({ type: "session.update", session: {} }));
 
         dc.send(
@@ -192,7 +203,7 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
         } catch {}
       };
 
-      // 6) SDP exchange with GA endpoint ✅
+      // 6) SDP exchange using GA endpoint ✅
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -214,9 +225,10 @@ Keep it short. Ask the student to speak more. Correct gently and continue.`,
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
-      // If user already enabled sound, try play
       if (soundEnabled && audioRef.current) {
-        try { await audioRef.current.play(); } catch {}
+        try {
+          await audioRef.current.play();
+        } catch {}
       }
     } catch (e) {
       setPcStatus("error");
