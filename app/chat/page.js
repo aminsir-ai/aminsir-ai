@@ -14,7 +14,7 @@ export default function ChatPage() {
   const [elapsed, setElapsed] = useState(0);
 
   const [lastEvent, setLastEvent] = useState(null);
-  const [eventLog, setEventLog] = useState([]); // last ~12 events
+  const [eventLog, setEventLog] = useState([]);
 
   const pcRef = useRef(null);
   const dcRef = useRef(null);
@@ -23,7 +23,7 @@ export default function ChatPage() {
   const audioRef = useRef(null);
   const timerRef = useRef(null);
 
-  // ✅ PIN login session check
+  // ✅ Login check
   useEffect(() => {
     const raw = localStorage.getItem("aminsir_user");
     if (!raw) {
@@ -64,17 +64,23 @@ export default function ChatPage() {
       setPcStatus("closed");
 
       if (dcRef.current) {
-        try { dcRef.current.close(); } catch {}
+        try {
+          dcRef.current.close();
+        } catch {}
         dcRef.current = null;
       }
 
       if (pcRef.current) {
-        try { pcRef.current.close(); } catch {}
+        try {
+          pcRef.current.close();
+        } catch {}
         pcRef.current = null;
       }
 
       if (localStreamRef.current) {
-        try { localStreamRef.current.getTracks().forEach((t) => t.stop()); } catch {}
+        try {
+          localStreamRef.current.getTracks().forEach((t) => t.stop());
+        } catch {}
         localStreamRef.current = null;
       }
 
@@ -107,6 +113,7 @@ export default function ChatPage() {
     dc.send(JSON.stringify(obj));
   };
 
+  // ✅ Enable sound button (manual unlock)
   const enableSound = async () => {
     try {
       if (!audioRef.current) return;
@@ -124,6 +131,9 @@ export default function ChatPage() {
       setEventLog([]);
       setPcStatus("connecting");
       setElapsed(0);
+      setSoundEnabled(false);
+      setTrackYes(false);
+      setDcStatus("closed");
 
       // 1) Get GA client secret from backend
       const r = await fetch("/api/realtime", {
@@ -152,7 +162,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         return;
       }
 
-      // 2) Create PeerConnection
+      // 2) PeerConnection
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
@@ -169,14 +179,27 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
       localStreamRef.current = localStream;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
-      // 4) Remote audio stream
+      // 4) Remote audio
       const remoteStream = new MediaStream();
       remoteStreamRef.current = remoteStream;
 
-      pc.ontrack = (event) => {
+      // ✅ IMPORTANT FIX: Auto play when track arrives
+      pc.ontrack = async (event) => {
         setTrackYes(true);
+
         event.streams[0].getTracks().forEach((t) => remoteStream.addTrack(t));
-        if (audioRef.current) audioRef.current.srcObject = remoteStream;
+
+        if (audioRef.current) {
+          audioRef.current.srcObject = remoteStream;
+
+          try {
+            await audioRef.current.play();
+            setSoundEnabled(true);
+          } catch (err) {
+            // Browser may still require user click on some devices
+            console.log("Autoplay blocked until user interaction.");
+          }
+        }
       };
 
       // 5) Data channel
@@ -187,8 +210,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         setDcStatus("open");
         startTimer();
 
-        // ✅ IMPORTANT: For WebRTC, do NOT set audio.output.format
-        // Just set voice + output_modalities
+        // ✅ For WebRTC: do not set output format; just voice + audio modality
         dcSend({
           type: "session.update",
           session: {
@@ -203,7 +225,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
           },
         });
 
-        // ✅ Add a user text message
+        // ✅ Add user message
         dcSend({
           type: "conversation.item.create",
           item: {
@@ -212,18 +234,16 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
             content: [
               {
                 type: "input_text",
-                text: `Greet ${userName} warmly as Amin Sir and ask ONE simple English speaking question.`,
+                text: `Greet ${userName} warmly as Amin Sir and ask ONE very simple English speaking question.`,
               },
             ],
           },
         });
 
-        // ✅ Force an AUDIO response
+        // ✅ Force audio response
         dcSend({
           type: "response.create",
-          response: {
-            output_modalities: ["audio"],
-          },
+          response: { output_modalities: ["audio"] },
         });
       };
 
@@ -231,7 +251,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         try {
           const obj = JSON.parse(msg.data);
 
-          // show lifecycle events so we can confirm response is happening
+          // show lifecycle events
           if (
             obj?.type?.startsWith("response.") ||
             obj?.type?.startsWith("session.") ||
@@ -241,7 +261,6 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
             pushEvent(obj);
           }
 
-          // show errors always
           if (obj?.type === "error" || obj?.error) {
             setLastEvent(obj);
           }
@@ -269,11 +288,6 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
       }
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-
-      // If user already enabled sound, try play
-      if (soundEnabled && audioRef.current) {
-        try { await audioRef.current.play(); } catch {}
-      }
     } catch (e) {
       setPcStatus("error");
       setLastEvent({ type: "error", message: String(e?.message || e) });
