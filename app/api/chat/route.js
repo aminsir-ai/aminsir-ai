@@ -18,28 +18,38 @@ Rules:
 
 export async function POST(req) {
   try {
-    const { messages } = await req.json();
+    const body = await req.json();
+
+    // Support BOTH formats:
+    // 1) { message: "hello" }
+    // 2) { messages: [{ role, content }, ...] }
+    let messages = [];
+
+    if (Array.isArray(body?.messages)) {
+      messages = body.messages;
+    } else if (typeof body?.message === "string" && body.message.trim()) {
+      messages = [{ role: "user", content: body.message.trim() }];
+    }
 
     const chatMessages = [
       { role: "system", content: SYSTEM_PROMPT },
-      ...messages.map(m => ({
-        role: m.role,
-        content: m.content
-      }))
+      ...messages.map((m) => ({
+        role: m.role || "user",
+        content: m.content || "",
+      })),
     ];
 
     const completion = await client.chat.completions.create({
       model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       messages: chatMessages,
-      temperature: 0.7
+      temperature: 0.7,
     });
 
-    const reply = completion.choices[0].message.content;
+    const reply = completion?.choices?.[0]?.message?.content || "";
 
     return Response.json({ reply });
-
   } catch (error) {
     console.error(error);
-    return Response.json({ error: error.message }, { status: 500 });
+    return Response.json({ error: error.message || "Unknown error" }, { status: 500 });
   }
 }
