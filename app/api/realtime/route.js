@@ -4,7 +4,13 @@ export const runtime = "nodejs";
 
 export async function POST(req) {
   try {
-    const body = await req.json();
+    // SAFETY: req.json() can throw if body is empty/invalid
+    let body = {};
+    try {
+      body = await req.json();
+    } catch {
+      body = {};
+    }
 
     let offerSdp = body?.sdp || "";
     const model = body?.model || "gpt-realtime";
@@ -56,7 +62,9 @@ Syllabus topic: ${syllabusTopic || "(not provided)"}
 
 HOMEWORK STATUS:
 hasHomework = ${hasHomework ? "true" : "false"}
-homeworkFirstSentence = ${homeworkFirstSentence ? JSON.stringify(homeworkFirstSentence) : "(empty)"}
+homeworkFirstSentence = ${
+      homeworkFirstSentence ? JSON.stringify(homeworkFirstSentence) : "(empty)"
+    }
 
 ABSOLUTE RULES (MUST FOLLOW):
 - If hasHomework is FALSE: you must NOT say "Now read sentence 1" and must NOT mention homework at all.
@@ -164,6 +172,7 @@ Week 12 (Final test) — say:
       );
     }
 
+    // OpenAI returns SDP answer as plain text
     return NextResponse.json({ ok: true, type: "answer", sdp: text });
   } catch (err) {
     return NextResponse.json(
