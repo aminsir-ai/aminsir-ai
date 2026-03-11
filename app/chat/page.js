@@ -20,13 +20,13 @@ export default function ChatPage() {
   const audioRef = useRef(null);
   const timerRef = useRef(null);
 
-  // ✅ Login check
   useEffect(() => {
     const raw = localStorage.getItem("aminsir_user");
     if (!raw) {
       router.push("/login");
       return;
     }
+
     try {
       const u = JSON.parse(raw);
       setUserName(u?.name || "User");
@@ -37,11 +37,15 @@ export default function ChatPage() {
 
   const startTimer = () => {
     stopTimer();
-    timerRef.current = setInterval(() => setElapsed((t) => t + 1), 1000);
+    timerRef.current = setInterval(() => {
+      setElapsed((t) => t + 1);
+    }, 1000);
   };
 
   const stopTimer = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
     timerRef.current = null;
   };
 
@@ -93,7 +97,9 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    return () => safeClose();
+    return () => {
+      safeClose();
+    };
   }, [safeClose]);
 
   const dcSend = (obj) => {
@@ -102,40 +108,47 @@ export default function ChatPage() {
     dc.send(JSON.stringify(obj));
   };
 
-  // ✅ Enable sound button (manual unlock for strict browsers)
   const enableSound = async () => {
     try {
       if (!audioRef.current) return;
-      if (remoteStreamRef.current) audioRef.current.srcObject = remoteStreamRef.current;
+
+      if (remoteStreamRef.current) {
+        audioRef.current.srcObject = remoteStreamRef.current;
+      }
+
       await audioRef.current.play();
       setSoundEnabled(true);
     } catch {
       setSoundEnabled(false);
     }
   };
-
   const startVoice = async () => {
     try {
+      await safeClose();
+
       setPcStatus("connecting");
       setElapsed(0);
       setSoundEnabled(false);
       setTrackYes(false);
       setDcStatus("closed");
 
-      // 1) Get GA client secret
+      const instructions = `You are Amin Sir AI Voice Tutor. Student name is ${userName}.
+Speak mostly English and use simple Hindi only when needed (80/20).
+Keep answers short.
+Ask the student to speak more.
+Correct gently and continue.`;
+
       const r = await fetch("/api/realtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           voice: "marin",
-          instructions:
-            `You are Amin Sir AI Voice Tutor. Student name is ${userName}.
-Speak mostly English and use simple Hindi only when needed (80/20).
-Keep answers short. Ask the student to speak more. Correct gently and continue.`,
+          instructions,
         }),
       });
 
       const data = await r.json();
+
       if (!r.ok) {
         setPcStatus("error");
         return;
@@ -147,32 +160,43 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         return;
       }
 
-      // 2) PeerConnection
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
       pcRef.current = pc;
 
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected") setPcStatus("connected");
-        if (pc.connectionState === "failed" || pc.connectionState === "disconnected") setPcStatus("error");
-        if (pc.connectionState === "closed") setPcStatus("closed");
+        if (pc.connectionState === "connected") {
+          setPcStatus("connected");
+        }
+        if (
+          pc.connectionState === "failed" ||
+          pc.connectionState === "disconnected"
+        ) {
+          setPcStatus("error");
+        }
+        if (pc.connectionState === "closed") {
+          setPcStatus("closed");
+        }
       };
 
-      // 3) Microphone
-      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+
       localStreamRef.current = localStream;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
-      // 4) Remote audio stream
       const remoteStream = new MediaStream();
       remoteStreamRef.current = remoteStream;
 
-      // ✅ Auto play when remote track arrives
       pc.ontrack = async (event) => {
         setTrackYes(true);
 
-        event.streams[0].getTracks().forEach((t) => remoteStream.addTrack(t));
+        event.streams[0].getTracks().forEach((t) => {
+          remoteStream.addTrack(t);
+        });
 
         if (audioRef.current) {
           audioRef.current.srcObject = remoteStream;
@@ -180,12 +204,11 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
             await audioRef.current.play();
             setSoundEnabled(true);
           } catch {
-            // If autoplay blocked, student can tap Enable Sound
+            setSoundEnabled(false);
           }
         }
       };
 
-      // 5) Data channel
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
@@ -193,22 +216,21 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         setDcStatus("open");
         startTimer();
 
-        // Session settings
         dcSend({
           type: "session.update",
           session: {
             type: "realtime",
             model: "gpt-realtime",
             output_modalities: ["audio"],
-            audio: { output: { voice: "marin" } },
-            instructions:
-              `You are Amin Sir AI Voice Tutor. Student name is ${userName}.
-Speak mostly English and use simple Hindi only when needed (80/20).
-Keep answers short. Ask the student to speak more. Correct gently and continue.`,
+            audio: {
+              output: {
+                voice: "marin",
+              },
+            },
+            instructions,
           },
         });
 
-        // Initial greeting prompt
         dcSend({
           type: "conversation.item.create",
           item: {
@@ -225,11 +247,16 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
 
         dcSend({
           type: "response.create",
-          response: { output_modalities: ["audio"] },
+          response: {
+            output_modalities: ["audio"],
+          },
         });
       };
 
-      // 6) SDP exchange (GA)
+      dc.onclose = () => {
+        setDcStatus("closed");
+      };
+
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -243,12 +270,16 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
       });
 
       const answerSdp = await sdpResp.text();
+
       if (!sdpResp.ok) {
         setPcStatus("error");
         return;
       }
 
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      await pc.setRemoteDescription({
+        type: "answer",
+        sdp: answerSdp,
+      });
     } catch {
       setPcStatus("error");
     }
@@ -259,13 +290,29 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
     localStorage.removeItem("aminsir_user");
     router.push("/login");
   };
-
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
         <h2 style={{ margin: 0 }}>Amin Sir AI Tutor</h2>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
           <b>User: {userName || "..."}</b>
+
           <button
             onClick={logout}
             style={{
@@ -287,15 +334,38 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
       </div>
 
       <div style={{ marginTop: 14, fontSize: 20, fontWeight: 900 }}>
-        Step: Tap Enable Sound 🔊 (important on mobile)
+        Step: Tap Enable Sound 🔊 first, then Start Voice 🎤
       </div>
 
       <div style={{ marginTop: 10, fontSize: 18, fontWeight: 800 }}>
-        DC: {dcStatus === "open" ? "Open ✅" : "Closed"} | Track: {trackYes ? "Yes ✅" : "No"} | Sound:{" "}
+        DC: {dcStatus === "open" ? "Open ✅" : "Closed"} | Track:{" "}
+        {trackYes ? "Yes ✅" : "No"} | Sound:{" "}
         {soundEnabled ? "Enabled ✅" : "Locked"}
       </div>
 
-      <div style={{ marginTop: 18, display: "flex", gap: 14, flexWrap: "wrap" }}>
+      <div
+        style={{
+          marginTop: 18,
+          display: "flex",
+          gap: 14,
+          flexWrap: "wrap",
+        }}
+      >
+        <button
+          onClick={enableSound}
+          style={{
+            padding: "14px 22px",
+            borderRadius: 16,
+            border: "1px solid #b7e4b7",
+            cursor: "pointer",
+            fontWeight: 900,
+            fontSize: 18,
+            background: "#eaf7ea",
+          }}
+        >
+          Enable Sound 🔊 {soundEnabled ? "✅" : ""}
+        </button>
+
         <button
           onClick={startVoice}
           style={{
@@ -310,21 +380,6 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
           }}
         >
           Start Voice 🎤
-        </button>
-
-        <button
-          onClick={enableSound}
-          style={{
-            padding: "14px 22px",
-            borderRadius: 16,
-            border: "1px solid #b7e4b7",
-            cursor: "pointer",
-            fontWeight: 900,
-            fontSize: 18,
-            background: "#eaf7ea",
-          }}
-        >
-          Enable Sound 🔊 {soundEnabled ? "✅" : ""}
         </button>
 
         <button
@@ -343,8 +398,7 @@ Keep answers short. Ask the student to speak more. Correct gently and continue.`
         </button>
       </div>
 
-      {/* Hidden audio element for live WebRTC stream */}
-      <audio ref={audioRef} />
+      <audio ref={audioRef} autoPlay playsInline />
 
       <div style={{ marginTop: 16, fontWeight: 900, fontSize: 18 }}>
         Session Time: {formatTime(elapsed)}
