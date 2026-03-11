@@ -149,7 +149,7 @@ function getLessonKeywords(lesson) {
   );
 }
 
-function buildScoreCard({ utterances, lesson }) {
+function buildScoreCard({ utterances, lesson, gameBonus = 0 }) {
   const joinedText = utterances.join(" ").trim();
   const totalWords = cleanWords(joinedText).length;
   const turnCount = utterances.filter((u) => String(u || "").trim()).length;
@@ -206,7 +206,8 @@ function buildScoreCard({ utterances, lesson }) {
         pronunciationScore +
         lessonRelevanceScore) /
         4 +
-        confidenceBonus
+        confidenceBonus +
+        gameBonus
     ),
     20,
     99
@@ -232,6 +233,10 @@ function buildScoreCard({ utterances, lesson }) {
       "Good start. Speak a little more and try to make complete sentences.";
   }
 
+  if (gameBonus > 0) {
+    feedback += ` Game bonus added: +${gameBonus}.`;
+  }
+
   return {
     overall,
     status,
@@ -244,6 +249,7 @@ function buildScoreCard({ utterances, lesson }) {
     turnCount,
     avgWordsPerTurn: round(avgWordsPerTurn),
     matchedKeywords,
+    gameBonus,
   };
 }
 
@@ -304,11 +310,24 @@ export default function ChatPage() {
   const [debugMessage, setDebugMessage] = useState("");
   const [practiceStats, setPracticeStats] = useState(getInitialStats());
 
+  const [gameModeEnabled, setGameModeEnabled] = useState(false);
+  const [gameSecondsLeft, setGameSecondsLeft] = useState(60);
+  const [gameResult, setGameResult] = useState(null);
+
   const peerConnectionRef = useRef(null);
   const dataChannelRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const audioContextRef = useRef(null);
+  const gameTimerRef = useRef(null);
+  const autoStoppingRef = useRef(false);
+
+  const latestUserTranscriptRef = useRef([]);
+  const latestGameSecondsLeftRef = useRef(60);
+  const latestGameModeEnabledRef = useRef(false);
+
+  const GAME_DURATION = 60;
+  const GAME_TARGET_TURNS = 5;
 
   const levels = useMemo(() => getLevels(), []);
   const weeks = useMemo(() => getWeeks(selectedLevel), [selectedLevel]);
@@ -321,6 +340,18 @@ export default function ChatPage() {
     () => getDay(selectedLevel, selectedWeek, selectedDay),
     [selectedLevel, selectedWeek, selectedDay]
   );
+
+  useEffect(() => {
+    latestUserTranscriptRef.current = userTranscript;
+  }, [userTranscript]);
+
+  useEffect(() => {
+    latestGameSecondsLeftRef.current = gameSecondsLeft;
+  }, [gameSecondsLeft]);
+
+  useEffect(() => {
+    latestGameModeEnabledRef.current = gameModeEnabled;
+  }, [gameModeEnabled]);
 
   useEffect(() => {
     try {
@@ -400,7 +431,22 @@ export default function ChatPage() {
     lesson?.topic ||
     `Level ${selectedLevel} Week ${selectedWeek} Day ${selectedDay}`;
 
+  const safeUserTurnCount = useMemo(() => {
+    return userTranscript.filter((u) => String(u || "").trim()).length;
+  }, [userTranscript]);
+
   const lessonPrompt = useMemo(() => {
+    const gameInstructions = gameModeEnabled
+      ? `
+Game Mode is ON.
+Challenge duration: ${GAME_DURATION} seconds.
+Encourage the student to speak quickly and clearly.
+Ask short questions.
+Keep energy high.
+Help the student complete at least ${GAME_TARGET_TURNS} speaking turns.
+`
+      : "";
+
     return `
 You are Amin Sir AI Speaking Coach.
 
@@ -426,16 +472,37 @@ Teaching style:
 - Motivate the student
 - Focus on today's lesson only
 
+${gameInstructions}
+
 Start by greeting the student and introducing today's lesson.
 `.trim();
-  }, [selectedLevel, selectedWeek, selectedDay, lesson]);
+  }, [
+    selectedLevel,
+    selectedWeek,
+    selectedDay,
+    lesson,
+    gameModeEnabled,
+  ]);
+
+  const clearGameTimer = useCallback(() => {
+    if (gameTimerRef.current) {
+      clearInterval(gameTimerRef.current);
+      gameTimerRef.current = null;
+    }
+  }, []);
 
   const resetSessionUi = useCallback(() => {
     setAiTranscript([]);
     setUserTranscript([]);
+    latestUserTranscriptRef.current = [];
     setScoreCard(null);
     setDebugMessage("");
-  }, []);
+    setGameResult(null);
+    setGameSecondsLeft(GAME_DURATION);
+    latestGameSecondsLeftRef.current = GAME_DURATION;
+    autoStoppingRef.current = false;
+    clearGameTimer();
+  }, [GAME_DURATION, clearGameTimer]);
 
   const unlockAudio = async () => {
     try {
@@ -467,6 +534,8 @@ Start by greeting the student and introducing today's lesson.
 
   const closeSession = useCallback(async () => {
     try {
+      clearGameTimer();
+
       if (dataChannelRef.current) {
         try {
           dataChannelRef.current.close();
@@ -505,7 +574,7 @@ Start by greeting the student and introducing today's lesson.
       setIsSessionActive(false);
       setIsConnecting(false);
     }
-  }, []);
+  }, [clearGameTimer]);
 
   const updatePracticeStats = useCallback((latestScore) => {
     const today = getTodayKey();
@@ -535,13 +604,62 @@ Start by greeting the student and introducing today's lesson.
   }, []);
 
   const finalizeScore = useCallback(() => {
+    const latestUtterances = latestUserTranscriptRef.current || [];
+    const latestTurnCount = latestUtterances.filter((u) =>
+      String(u || "").trim()
+    ).length;
+
+    let gameBonus = 0;
+    let completed = false;
+
+    if (latestGameModeEnabledRef.current) {
+      completed = latestTurnCount >= GAME_TARGET_TURNS;
+      gameBonus = completed ? 8 : latestTurnCount >= 3 ? 3 : 0;
+
+      setGameResult({
+        completed,
+        turns: latestTurnCount,
+        targetTurns: GAME_TARGET_TURNS,
+        bonus: gameBonus,
+        timeUsed: GAME_DURATION - latestGameSecondsLeftRef.current,
+      });
+    } else {
+      setGameResult(null);
+    }
+
     const result = buildScoreCard({
-      utterances: userTranscript,
+      utterances: latestUtterances,
       lesson,
+      gameBonus,
     });
+
     setScoreCard(result);
     updatePracticeStats(result.overall);
-  }, [userTranscript, lesson, updatePracticeStats]);
+  }, [lesson, updatePracticeStats]);
+
+  useEffect(() => {
+    if (!gameModeEnabled || !isSessionActive) return;
+
+    gameTimerRef.current = setInterval(() => {
+      setGameSecondsLeft((prev) => {
+        if (prev <= 1) {
+          if (!autoStoppingRef.current) {
+            autoStoppingRef.current = true;
+            setStatusText("Game finished");
+            setTimeout(() => {
+              stopVoice(true);
+            }, 100);
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      clearGameTimer();
+    };
+  }, [gameModeEnabled, isSessionActive, clearGameTimer]);
 
   const handleRealtimeEvent = useCallback((event) => {
     if (!event || typeof event !== "object") return;
@@ -607,7 +725,7 @@ Start by greeting the student and introducing today's lesson.
 
     resetSessionUi();
     setIsConnecting(true);
-    setStatusText("Connecting...");
+    setStatusText(gameModeEnabled ? "Game connecting..." : "Connecting...");
 
     try {
       if (!soundEnabled) {
@@ -687,7 +805,7 @@ Start by greeting the student and introducing today's lesson.
       dataChannelRef.current = dc;
 
       dc.onopen = () => {
-        setStatusText("Connected");
+        setStatusText(gameModeEnabled ? "Game live" : "Connected");
 
         dc.send(
           JSON.stringify({
@@ -707,7 +825,9 @@ Start by greeting the student and introducing today's lesson.
             type: "response.create",
             response: {
               modalities: ["audio", "text"],
-              instructions: `Greet the student warmly and begin today's lesson: ${safeLessonTitle}.`,
+              instructions: gameModeEnabled
+                ? `Game Mode is ON. Greet the student warmly and start a fast speaking challenge for today's lesson: ${safeLessonTitle}.`
+                : `Greet the student warmly and begin today's lesson: ${safeLessonTitle}.`,
             },
           })
         );
@@ -755,7 +875,11 @@ Start by greeting the student and introducing today's lesson.
       });
 
       setIsSessionActive(true);
-      setStatusText("Lesson live");
+      if (gameModeEnabled) {
+        setGameSecondsLeft(GAME_DURATION);
+        latestGameSecondsLeftRef.current = GAME_DURATION;
+      }
+      setStatusText(gameModeEnabled ? "Game live" : "Lesson live");
     } catch (error) {
       console.error("Start voice error:", error);
       setDebugMessage(error?.message || "Unknown start voice error");
@@ -766,12 +890,12 @@ Start by greeting the student and introducing today's lesson.
     }
   };
 
-  const stopVoice = async () => {
-    setStatusText("Stopping...");
+  async function stopVoice(fromAutoStop = false) {
+    setStatusText(fromAutoStop ? "Challenge complete" : "Stopping...");
     await closeSession();
     finalizeScore();
-    setStatusText("Stopped");
-  };
+    setStatusText(fromAutoStop ? "Game stopped" : "Stopped");
+  }
 
   const transcriptPreview = useMemo(() => {
     return userTranscript
@@ -837,6 +961,65 @@ Start by greeting the student and introducing today's lesson.
             Last Practice:{" "}
             <span className="font-semibold">
               {formatPracticeDate(practiceStats.lastPracticeDate)}
+            </span>
+          </div>
+        </div>
+
+        <div className="mb-4 rounded-2xl bg-gradient-to-br from-violet-600 to-fuchsia-600 p-4 text-white shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-base font-bold">Speaking Game Mode</div>
+              <div className="mt-1 text-sm text-violet-100">
+                60-second challenge with bonus score
+              </div>
+            </div>
+
+            <button
+              onClick={() => setGameModeEnabled((prev) => !prev)}
+              disabled={isSessionActive || isConnecting}
+              className={`rounded-full px-4 py-2 text-sm font-bold shadow-sm ${
+                gameModeEnabled
+                  ? "bg-white text-violet-700"
+                  : "bg-white/15 text-white ring-1 ring-white/30"
+              } ${
+                isSessionActive || isConnecting
+                  ? "opacity-60"
+                  : "active:scale-[0.98]"
+              }`}
+            >
+              {gameModeEnabled ? "ON" : "OFF"}
+            </button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            <div className="rounded-xl bg-white/15 p-3 text-center">
+              <div className="text-xs opacity-90">Timer</div>
+              <div className="mt-1 text-xl font-extrabold">
+                {gameSecondsLeft}s
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-white/15 p-3 text-center">
+              <div className="text-xs opacity-90">Target</div>
+              <div className="mt-1 text-xl font-extrabold">
+                {GAME_TARGET_TURNS}
+              </div>
+              <div className="text-xs opacity-90">turns</div>
+            </div>
+
+            <div className="rounded-xl bg-white/15 p-3 text-center">
+              <div className="text-xs opacity-90">Current</div>
+              <div className="mt-1 text-xl font-extrabold">
+                {safeUserTurnCount}
+              </div>
+              <div className="text-xs opacity-90">turns</div>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-xl bg-white/10 px-3 py-2 text-sm">
+            Mode:{" "}
+            <span className="font-semibold">
+              {gameModeEnabled ? "Challenge Active" : "Normal Lesson"}
             </span>
           </div>
         </div>
@@ -940,11 +1123,15 @@ Start by greeting the student and introducing today's lesson.
               isConnecting || isSessionActive ? "bg-slate-400" : "bg-blue-600"
             }`}
           >
-            {isConnecting ? "Connecting..." : "Start Voice"}
+            {isConnecting
+              ? "Connecting..."
+              : gameModeEnabled
+              ? "Start Game Voice"
+              : "Start Voice"}
           </button>
 
           <button
-            onClick={stopVoice}
+            onClick={() => stopVoice(false)}
             disabled={!isSessionActive && !isConnecting}
             className={`rounded-2xl px-4 py-4 text-sm font-bold text-white shadow-sm active:scale-[0.99] ${
               !isSessionActive && !isConnecting ? "bg-slate-400" : "bg-rose-600"
@@ -959,6 +1146,32 @@ Start by greeting the student and introducing today's lesson.
             <div className="text-sm font-bold text-rose-800">Connection Error</div>
             <div className="mt-2 whitespace-pre-wrap break-words text-sm text-rose-700">
               {debugMessage}
+            </div>
+          </div>
+        ) : null}
+
+        {gameResult ? (
+          <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+            <h2 className="text-base font-bold">Game Result</h2>
+
+            <div
+              className={`mt-3 rounded-2xl p-4 text-white ${
+                gameResult.completed
+                  ? "bg-gradient-to-br from-emerald-600 to-teal-600"
+                  : "bg-gradient-to-br from-amber-500 to-orange-500"
+              }`}
+            >
+              <div className="text-sm opacity-90">
+                {gameResult.completed ? "Challenge Complete" : "Challenge Attempt"}
+              </div>
+              <div className="mt-1 text-2xl font-extrabold">
+                {gameResult.completed ? "Well Done!" : "Keep Going!"}
+              </div>
+              <div className="mt-2 text-sm">
+                Turns: {gameResult.turns} / {gameResult.targetTurns}
+              </div>
+              <div className="mt-1 text-sm">Bonus Score: +{gameResult.bonus}</div>
+              <div className="mt-1 text-sm">Time Used: {gameResult.timeUsed}s</div>
             </div>
           </div>
         ) : null}
@@ -983,6 +1196,11 @@ Start by greeting the student and introducing today's lesson.
                 <div className="mt-2 inline-flex rounded-full bg-white/10 px-3 py-1 text-sm font-semibold">
                   {scoreCard.status}
                 </div>
+                {scoreCard.gameBonus > 0 ? (
+                  <div className="mt-2 text-sm text-emerald-300">
+                    Game Bonus Applied: +{scoreCard.gameBonus}
+                  </div>
+                ) : null}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
