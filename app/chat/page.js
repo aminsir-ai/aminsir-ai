@@ -247,6 +247,45 @@ function buildScoreCard({ utterances, lesson }) {
   };
 }
 
+function getTodayKey() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = `${now.getMonth() + 1}`.padStart(2, "0");
+  const day = `${now.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getYesterdayKey() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const year = d.getFullYear();
+  const month = `${d.getMonth() + 1}`.padStart(2, "0");
+  const day = `${d.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatPracticeDate(dateKey) {
+  if (!dateKey) return "Not yet";
+  if (dateKey === getTodayKey()) return "Today";
+  if (dateKey === getYesterdayKey()) return "Yesterday";
+
+  try {
+    const date = new Date(`${dateKey}T00:00:00`);
+    return date.toLocaleDateString();
+  } catch {
+    return dateKey;
+  }
+}
+
+function getInitialStats() {
+  return {
+    currentStreak: 0,
+    bestScore: 0,
+    lastPracticeDate: "",
+    totalPracticeSessions: 0,
+  };
+}
+
 export default function ChatPage() {
   const router = useRouter();
 
@@ -263,6 +302,7 @@ export default function ChatPage() {
   const [userTranscript, setUserTranscript] = useState([]);
   const [scoreCard, setScoreCard] = useState(null);
   const [debugMessage, setDebugMessage] = useState("");
+  const [practiceStats, setPracticeStats] = useState(getInitialStats());
 
   const peerConnectionRef = useRef(null);
   const dataChannelRef = useRef(null);
@@ -308,6 +348,22 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
+    try {
+      const savedStats = JSON.parse(
+        localStorage.getItem("aminsir_practice_stats") || "{}"
+      );
+      setPracticeStats({
+        currentStreak: Number(savedStats?.currentStreak || 0),
+        bestScore: Number(savedStats?.bestScore || 0),
+        lastPracticeDate: savedStats?.lastPracticeDate || "",
+        totalPracticeSessions: Number(savedStats?.totalPracticeSessions || 0),
+      });
+    } catch {
+      setPracticeStats(getInitialStats());
+    }
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem(
       "aminsir_mobile_lesson_selection",
       JSON.stringify({
@@ -317,6 +373,13 @@ export default function ChatPage() {
       })
     );
   }, [selectedLevel, selectedWeek, selectedDay]);
+
+  useEffect(() => {
+    localStorage.setItem(
+      "aminsir_practice_stats",
+      JSON.stringify(practiceStats)
+    );
+  }, [practiceStats]);
 
   useEffect(() => {
     const validWeeks = getWeeks(selectedLevel);
@@ -444,13 +507,41 @@ Start by greeting the student and introducing today's lesson.
     }
   }, []);
 
+  const updatePracticeStats = useCallback((latestScore) => {
+    const today = getTodayKey();
+    const yesterday = getYesterdayKey();
+
+    setPracticeStats((prev) => {
+      let nextStreak = 1;
+
+      if (prev.lastPracticeDate === today) {
+        nextStreak = prev.currentStreak || 1;
+      } else if (prev.lastPracticeDate === yesterday) {
+        nextStreak = (prev.currentStreak || 0) + 1;
+      } else {
+        nextStreak = 1;
+      }
+
+      return {
+        currentStreak: nextStreak,
+        bestScore: Math.max(Number(prev.bestScore || 0), Number(latestScore || 0)),
+        lastPracticeDate: today,
+        totalPracticeSessions:
+          prev.lastPracticeDate === today
+            ? Number(prev.totalPracticeSessions || 0)
+            : Number(prev.totalPracticeSessions || 0) + 1,
+      };
+    });
+  }, []);
+
   const finalizeScore = useCallback(() => {
     const result = buildScoreCard({
       utterances: userTranscript,
       lesson,
     });
     setScoreCard(result);
-  }, [userTranscript, lesson]);
+    updatePracticeStats(result.overall);
+  }, [userTranscript, lesson, updatePracticeStats]);
 
   const handleRealtimeEvent = useCallback((event) => {
     if (!event || typeof event !== "object") return;
@@ -713,6 +804,43 @@ Start by greeting the student and introducing today's lesson.
           </p>
         </div>
 
+        <div className="mb-4 rounded-2xl bg-gradient-to-br from-orange-500 to-rose-500 p-4 text-white shadow-sm">
+          <div className="text-sm font-bold">Daily Practice Progress</div>
+
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            <div className="rounded-xl bg-white/15 p-3 text-center">
+              <div className="text-xs opacity-90">Streak</div>
+              <div className="mt-1 text-xl font-extrabold">
+                {practiceStats.currentStreak}
+              </div>
+              <div className="text-xs opacity-90">days</div>
+            </div>
+
+            <div className="rounded-xl bg-white/15 p-3 text-center">
+              <div className="text-xs opacity-90">Best Score</div>
+              <div className="mt-1 text-xl font-extrabold">
+                {practiceStats.bestScore}
+              </div>
+              <div className="text-xs opacity-90">/100</div>
+            </div>
+
+            <div className="rounded-xl bg-white/15 p-3 text-center">
+              <div className="text-xs opacity-90">Sessions</div>
+              <div className="mt-1 text-xl font-extrabold">
+                {practiceStats.totalPracticeSessions}
+              </div>
+              <div className="text-xs opacity-90">total</div>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-xl bg-white/10 px-3 py-2 text-sm">
+            Last Practice:{" "}
+            <span className="font-semibold">
+              {formatPracticeDate(practiceStats.lastPracticeDate)}
+            </span>
+          </div>
+        </div>
+
         <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
           <h2 className="mb-3 text-base font-bold">Choose Lesson</h2>
 
@@ -731,8 +859,7 @@ Start by greeting the student and introducing today's lesson.
               >
                 {levels.map((lvl) => (
                   <option key={lvl.level} value={lvl.level}>
-                    Level {lvl.level} (
-                    {Array.isArray(lvl.weeks) ? lvl.weeks.length : 0} weeks)
+                    Level {lvl.level} ({Array.isArray(lvl.weeks) ? lvl.weeks.length : 0} weeks)
                   </option>
                 ))}
               </select>
