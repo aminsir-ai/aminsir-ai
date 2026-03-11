@@ -1,89 +1,77 @@
-// app/api/realtime/route.js
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function POST(req) {
+export async function GET() {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
+
     if (!apiKey) {
       return NextResponse.json(
-        { error: "Missing OPENAI_API_KEY in Vercel environment variables" },
+        {
+          error: "Missing OPENAI_API_KEY in environment variables",
+        },
         { status: 500 }
       );
     }
 
-    let body = {};
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
+    const model =
+      process.env.OPENAI_REALTIME_MODEL ||
+      "gpt-4o-realtime-preview-2024-12-17";
 
-    const voice = body.voice || "marin";
-    const instructions =
-      body.instructions ||
-      `You are Amin Sir AI Voice Tutor. Speak mostly English and use simple Hindi only when needed (80% English, 20% Hindi).
-Keep replies short and practical. Ask the student to speak more (student 70-80% talking). Correct gently and continue.`;
-
-    // ✅ GA client_secrets expects { session: {...} }
-    const payload = {
-      session: {
-        type: "realtime",
-        model: "gpt-realtime",
-        instructions,
-        audio: {
-          output: { voice },
-        },
-      },
-    };
-
-    const r = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+    const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        model,
+        voice: "marin",
+      }),
+      cache: "no-store",
     });
 
-    const data = await r.json();
+    const rawText = await response.text();
 
-    if (!r.ok) {
+    if (!response.ok) {
       return NextResponse.json(
         {
-          error: "OpenAI Realtime client_secrets request failed",
-          status: r.status,
-          details: data,
+          error: "Failed to create realtime session",
+          status: response.status,
+          details: rawText,
         },
-        { status: r.status }
+        { status: response.status }
       );
     }
 
-    // ✅ Normalize output so frontend ALWAYS gets client_secret.value
-    const clientSecretValue = data?.client_secret?.value || data?.value;
-    const expiresAt = data?.client_secret?.expires_at || data?.expires_at;
-
-    if (!clientSecretValue) {
+    let data = {};
+    try {
+      data = JSON.parse(rawText);
+    } catch {
       return NextResponse.json(
-        { error: "No client secret returned from OpenAI", raw: data },
+        {
+          error: "OpenAI returned non-JSON response",
+          details: rawText,
+        },
         { status: 500 }
       );
     }
 
     return NextResponse.json(
       {
-        client_secret: { value: clientSecretValue },
-        expires_at: expiresAt,
-        session: data?.session || null,
+        model,
+        client_secret: data?.client_secret || null,
+        raw: data,
       },
       { status: 200 }
     );
-  } catch (err) {
+  } catch (error) {
     return NextResponse.json(
       {
-        error: "Server error in /api/realtime",
-        details: String(err?.message || err),
+        error: "Realtime route crashed",
+        details: error?.message || "Unknown server error",
       },
       { status: 500 }
     );

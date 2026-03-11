@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { COURSE_DATA } from "@/lib/courseData";
 
@@ -9,7 +9,9 @@ function getLevels() {
 }
 
 function getLevel(levelNo) {
-  return getLevels().find((lvl) => Number(lvl?.level) === Number(levelNo)) || null;
+  return (
+    getLevels().find((lvl) => Number(lvl?.level) === Number(levelNo)) || null
+  );
 }
 
 function getWeeks(levelNo) {
@@ -18,7 +20,9 @@ function getWeeks(levelNo) {
 }
 
 function getWeek(levelNo, weekNo) {
-  return getWeeks(levelNo).find((wk) => Number(wk?.week) === Number(weekNo)) || null;
+  return (
+    getWeeks(levelNo).find((wk) => Number(wk?.week) === Number(weekNo)) || null
+  );
 }
 
 function getDays(levelNo, weekNo) {
@@ -26,643 +30,925 @@ function getDays(levelNo, weekNo) {
   return Array.isArray(week?.days) ? week.days : [];
 }
 
-function getLesson(levelNo, weekNo, dayNo) {
-  const day =
-    getDays(levelNo, weekNo).find((d) => Number(d?.day) === Number(dayNo)) || null;
+function getDay(levelNo, weekNo, dayNo) {
+  return (
+    getDays(levelNo, weekNo).find((d) => Number(d?.day) === Number(dayNo)) ||
+    null
+  );
+}
 
-  if (day) return day;
-
+function getInitialLessonState() {
   return {
-    day: Number(dayNo || 1),
-    title: `Level ${levelNo} Week ${weekNo} Day ${dayNo}`,
-    vocabulary: ["hello", "speak", "practice"],
-    speakingFocus: "Practice simple English speaking.",
-    practicePrompt: "Speak 3 short English sentences.",
-    grammarHintHindi: "",
-    lessonType: "conversation",
+    level: 1,
+    week: 1,
+    day: 1,
   };
 }
 
-function getMaxLevel() {
-  const levels = getLevels();
-  return levels.length || 1;
+function cleanWords(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/gi, " ")
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter(Boolean);
 }
 
-function getMaxWeek(levelNo) {
-  const weeks = getWeeks(levelNo);
-  return weeks.length || 1;
+function uniqueWords(text) {
+  return [...new Set(cleanWords(text))];
 }
 
-function getMaxDay(levelNo, weekNo) {
-  const days = getDays(levelNo, weekNo);
-  return days.length || 1;
+function clamp(num, min, max) {
+  return Math.max(min, Math.min(max, num));
 }
 
-function buildLessonInstructions({ userName, levelNo, weekNo, dayNo, lesson }) {
-  const vocab = Array.isArray(lesson?.vocabulary) ? lesson.vocabulary.join(", ") : "";
-  const title = String(lesson?.title || "").trim();
-  const focus = String(lesson?.speakingFocus || "").trim();
-  const practicePrompt = String(lesson?.practicePrompt || "").trim();
-  const grammarHintHindi = String(lesson?.grammarHintHindi || "").trim();
-  const lessonType = String(lesson?.lessonType || "conversation").trim();
+function round(num) {
+  return Math.round(num);
+}
 
-  return `
-You are Amin Sir AI Tutor and AI Speaking Coach.
+function getLessonKeywords(lesson) {
+  const stopWords = new Set([
+    "the",
+    "is",
+    "are",
+    "am",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "for",
+    "with",
+    "from",
+    "by",
+    "about",
+    "this",
+    "that",
+    "these",
+    "those",
+    "my",
+    "your",
+    "his",
+    "her",
+    "their",
+    "our",
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    "me",
+    "him",
+    "them",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "can",
+    "could",
+    "will",
+    "would",
+    "should",
+    "today",
+    "lesson",
+    "day",
+    "week",
+    "level",
+    "practice",
+    "speaking",
+    "english",
+    "learn",
+    "talk",
+    "speak",
+  ]);
 
-Student name is ${userName}.
+  const combined = [
+    lesson?.title || "",
+    lesson?.topic || "",
+    lesson?.description || "",
+    lesson?.goal || "",
+    lesson?.content || "",
+    Array.isArray(lesson?.keywords) ? lesson.keywords.join(" ") : "",
+  ].join(" ");
 
-Current lesson:
-Level: ${levelNo}
-Week: ${weekNo}
-Day: ${dayNo}
-Lesson title: ${title}
-Vocabulary: ${vocab}
-Speaking focus: ${focus}
-Practice prompt: ${practicePrompt}
-Hindi grammar help: ${grammarHintHindi}
-Lesson type: ${lessonType}
+  return uniqueWords(combined).filter(
+    (word) => word.length > 2 && !stopWords.has(word)
+  );
+}
 
-Your role:
-- Speak like a warm, confident male English teacher.
-- Use simple English.
-- Use only small simple Hindi help when really needed.
-- Keep your replies short and practical.
-- Ask only one question at a time.
-- Make the student speak more than you.
-- Encourage the student to answer in full sentences.
-- Correct gently and briefly.
-- Do not speak in long paragraphs.
-- Do not start random topics that are outside today's lesson.
+function buildScoreCard({ utterances, lesson }) {
+  const joinedText = utterances.join(" ").trim();
+  const totalWords = cleanWords(joinedText).length;
+  const turnCount = utterances.filter((u) => String(u || "").trim()).length;
+  const avgWordsPerTurn = turnCount > 0 ? totalWords / turnCount : 0;
 
-Opening rules:
-- Greet ${userName} warmly.
-- Tell ${userName} to answer in English.
-- Mention today's lesson in a natural way.
-- Ask the first question based only on today's lesson.
-- Do not ask about favorite color unless today's lesson is about that.
-- Do not say "This is Amin Sir."
+  const lessonKeywords = getLessonKeywords(lesson);
+  const spokenWordsSet = new Set(uniqueWords(joinedText));
+  const matchedKeywords = lessonKeywords.filter((k) => spokenWordsSet.has(k));
+  const keywordCoverage =
+    lessonKeywords.length > 0
+      ? matchedKeywords.length / lessonKeywords.length
+      : 0;
 
-Correction style:
-- First appreciate the effort.
-- Then say the corrected sentence shortly.
-- Then ask the student to repeat or answer again.
+  let participationScore = 0;
+  if (turnCount >= 10) participationScore = 95;
+  else if (turnCount >= 8) participationScore = 88;
+  else if (turnCount >= 6) participationScore = 80;
+  else if (turnCount >= 4) participationScore = 68;
+  else if (turnCount >= 2) participationScore = 55;
+  else if (turnCount >= 1) participationScore = 40;
+  else participationScore = 20;
 
-Always stay focused on today's lesson only.
-  `.trim();
+  let fluencyScore = 0;
+  if (avgWordsPerTurn >= 18) fluencyScore = 94;
+  else if (avgWordsPerTurn >= 14) fluencyScore = 88;
+  else if (avgWordsPerTurn >= 10) fluencyScore = 80;
+  else if (avgWordsPerTurn >= 7) fluencyScore = 70;
+  else if (avgWordsPerTurn >= 4) fluencyScore = 58;
+  else if (avgWordsPerTurn >= 1) fluencyScore = 45;
+  else fluencyScore = 20;
+
+  let pronunciationScore = 0;
+  if (totalWords >= 120) pronunciationScore = 90;
+  else if (totalWords >= 90) pronunciationScore = 84;
+  else if (totalWords >= 60) pronunciationScore = 77;
+  else if (totalWords >= 35) pronunciationScore = 68;
+  else if (totalWords >= 15) pronunciationScore = 58;
+  else if (totalWords >= 1) pronunciationScore = 45;
+  else pronunciationScore = 20;
+
+  const lessonRelevanceScore = clamp(
+    round(40 + keywordCoverage * 60),
+    20,
+    98
+  );
+
+  const confidenceBonus =
+    totalWords >= 80 && turnCount >= 6 ? 5 : totalWords >= 40 ? 3 : 0;
+
+  const overall = clamp(
+    round(
+      (participationScore +
+        fluencyScore +
+        pronunciationScore +
+        lessonRelevanceScore) /
+        4 +
+        confidenceBonus
+    ),
+    20,
+    99
+  );
+
+  let status = "Keep Practicing";
+  if (overall >= 90) status = "Excellent";
+  else if (overall >= 80) status = "Very Good";
+  else if (overall >= 70) status = "Good Job";
+  else if (overall >= 60) status = "Good Start";
+
+  let feedback = "Speak more full sentences next time.";
+  if (overall >= 90) {
+    feedback = "Excellent speaking. Keep this same confidence and clarity.";
+  } else if (overall >= 80) {
+    feedback =
+      "Very good work. Try to give slightly longer answers for even better fluency.";
+  } else if (overall >= 70) {
+    feedback =
+      "Good job. Try to answer with more detail and use lesson words naturally.";
+  } else if (overall >= 60) {
+    feedback =
+      "Good start. Speak a little more and try to make complete sentences.";
+  }
+
+  return {
+    overall,
+    status,
+    feedback,
+    participationScore,
+    fluencyScore,
+    pronunciationScore,
+    lessonRelevanceScore,
+    totalWords,
+    turnCount,
+    avgWordsPerTurn: round(avgWordsPerTurn),
+    matchedKeywords,
+  };
 }
 
 export default function ChatPage() {
   const router = useRouter();
 
-  const [userName, setUserName] = useState("");
-  const [studentId, setStudentId] = useState("");
-
   const [selectedLevel, setSelectedLevel] = useState(1);
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDay, setSelectedDay] = useState(1);
 
-  const [pcStatus, setPcStatus] = useState("idle");
-  const [dcStatus, setDcStatus] = useState("closed");
-  const [trackYes, setTrackYes] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
-  const [sessionMsg, setSessionMsg] = useState("");
+  const [statusText, setStatusText] = useState("Ready");
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isSessionActive, setIsSessionActive] = useState(false);
 
-  const pcRef = useRef(null);
-  const dcRef = useRef(null);
+  const [aiTranscript, setAiTranscript] = useState([]);
+  const [userTranscript, setUserTranscript] = useState([]);
+  const [scoreCard, setScoreCard] = useState(null);
+  const [debugMessage, setDebugMessage] = useState("");
+
+  const peerConnectionRef = useRef(null);
+  const dataChannelRef = useRef(null);
   const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(null);
-  const audioRef = useRef(null);
-  const timerRef = useRef(null);
+  const remoteAudioRef = useRef(null);
+  const audioContextRef = useRef(null);
+
+  const levels = useMemo(() => getLevels(), []);
+  const weeks = useMemo(() => getWeeks(selectedLevel), [selectedLevel]);
+  const days = useMemo(
+    () => getDays(selectedLevel, selectedWeek),
+    [selectedLevel, selectedWeek]
+  );
+
+  const lesson = useMemo(
+    () => getDay(selectedLevel, selectedWeek, selectedDay),
+    [selectedLevel, selectedWeek, selectedDay]
+  );
+
   useEffect(() => {
-    const raw = localStorage.getItem("aminsir_user");
-    if (!raw) {
-      router.push("/login");
-      return;
-    }
-
     try {
-      const u = JSON.parse(raw);
-      setUserName(u?.name || "User");
-      setStudentId(String(u?.id || u?.studentId || ""));
+      const saved = JSON.parse(
+        localStorage.getItem("aminsir_mobile_lesson_selection") || "{}"
+      );
+      const fallback = getInitialLessonState();
 
-      const safeLevel = Number(u?.selectedLevel || 1);
-      const safeWeek = Number(u?.selectedWeek || 1);
-      const safeDay = Number(u?.selectedDay || 1);
+      const level = Number(saved?.level || fallback.level);
+      const week = Number(saved?.week || fallback.week);
+      const day = Number(saved?.day || fallback.day);
 
-      setSelectedLevel(safeLevel);
-      setSelectedWeek(safeWeek);
-      setSelectedDay(safeDay);
+      const validLevel = getLevel(level) ? level : 1;
+      const validWeek = getWeek(validLevel, week) ? week : 1;
+      const validDay = getDay(validLevel, validWeek, day) ? day : 1;
+
+      setSelectedLevel(validLevel);
+      setSelectedWeek(validWeek);
+      setSelectedDay(validDay);
     } catch {
-      router.push("/login");
+      setSelectedLevel(1);
+      setSelectedWeek(1);
+      setSelectedDay(1);
     }
-  }, [router]);
-
-  const maxLevel = getMaxLevel();
-  const maxWeek = getMaxWeek(selectedLevel);
-  const maxDay = getMaxDay(selectedLevel, selectedWeek);
-
-  const lesson = getLesson(selectedLevel, selectedWeek, selectedDay);
-  const vocabulary = Array.isArray(lesson?.vocabulary) ? lesson.vocabulary : [];
-
-  const startTimer = () => {
-    stopTimer();
-    timerRef.current = setInterval(() => {
-      setElapsed((t) => t + 1);
-    }, 1000);
-  };
-
-  const stopTimer = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-    }
-    timerRef.current = null;
-  };
-
-  const formatTime = (sec) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}:${String(s).padStart(2, "0")}`;
-  };
-
-  const safeClose = useCallback(async () => {
-    try {
-      stopTimer();
-      setElapsed(0);
-      setSoundEnabled(false);
-      setTrackYes(false);
-      setDcStatus("closed");
-      setPcStatus("closed");
-
-      if (dcRef.current) {
-        try {
-          dcRef.current.close();
-        } catch {}
-        dcRef.current = null;
-      }
-
-      if (pcRef.current) {
-        try {
-          pcRef.current.close();
-        } catch {}
-        pcRef.current = null;
-      }
-
-      if (localStreamRef.current) {
-        try {
-          localStreamRef.current.getTracks().forEach((t) => t.stop());
-        } catch {}
-        localStreamRef.current = null;
-      }
-
-      if (audioRef.current) {
-        try {
-          audioRef.current.pause();
-          audioRef.current.srcObject = null;
-        } catch {}
-      }
-
-      remoteStreamRef.current = null;
-    } catch {}
   }, []);
 
   useEffect(() => {
-    return () => {
-      safeClose();
-    };
-  }, [safeClose]);
+    localStorage.setItem(
+      "aminsir_mobile_lesson_selection",
+      JSON.stringify({
+        level: selectedLevel,
+        week: selectedWeek,
+        day: selectedDay,
+      })
+    );
+  }, [selectedLevel, selectedWeek, selectedDay]);
 
-  const dcSend = (obj) => {
-    const dc = dcRef.current;
-    if (!dc || dc.readyState !== "open") return;
-    dc.send(JSON.stringify(obj));
-  };
+  useEffect(() => {
+    const validWeeks = getWeeks(selectedLevel);
+    if (!validWeeks.find((w) => Number(w?.week) === Number(selectedWeek))) {
+      setSelectedWeek(1);
+      setSelectedDay(1);
+      return;
+    }
 
-  const enableSound = async () => {
+    const validDays = getDays(selectedLevel, selectedWeek);
+    if (!validDays.find((d) => Number(d?.day) === Number(selectedDay))) {
+      setSelectedDay(1);
+    }
+  }, [selectedLevel, selectedWeek, selectedDay]);
+
+  const safeLessonTitle =
+    lesson?.title ||
+    lesson?.topic ||
+    `Level ${selectedLevel} Week ${selectedWeek} Day ${selectedDay}`;
+
+  const lessonPrompt = useMemo(() => {
+    return `
+You are Amin Sir AI Speaking Coach.
+
+Student lesson details:
+- Level: ${selectedLevel}
+- Week: ${selectedWeek}
+- Day: ${selectedDay}
+- Lesson title: ${lesson?.title || ""}
+- Lesson topic: ${lesson?.topic || ""}
+- Lesson description: ${lesson?.description || ""}
+- Lesson goal: ${lesson?.goal || ""}
+- Lesson content: ${lesson?.content || ""}
+
+Teaching style:
+- Speak in simple, clear English
+- Use very short sentences
+- Keep conversation mobile-friendly and easy
+- Encourage the student to speak more
+- Ask one question at a time
+- Do not give long lectures
+- Let the student speak most of the time
+- Correct politely
+- Motivate the student
+- Focus on today's lesson only
+
+Start by greeting the student and introducing today's lesson.
+`.trim();
+  }, [selectedLevel, selectedWeek, selectedDay, lesson]);
+
+  const resetSessionUi = useCallback(() => {
+    setAiTranscript([]);
+    setUserTranscript([]);
+    setScoreCard(null);
+    setDebugMessage("");
+  }, []);
+
+  const unlockAudio = async () => {
     try {
-      if (!audioRef.current) return;
-
-      if (remoteStreamRef.current) {
-        audioRef.current.srcObject = remoteStreamRef.current;
+      if (!audioContextRef.current) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        audioContextRef.current = new AudioCtx();
       }
 
-      await audioRef.current.play();
+      if (audioContextRef.current.state === "suspended") {
+        await audioContextRef.current.resume();
+      }
+
+      const oscillator = audioContextRef.current.createOscillator();
+      const gain = audioContextRef.current.createGain();
+      gain.gain.value = 0.0001;
+      oscillator.connect(gain);
+      gain.connect(audioContextRef.current.destination);
+      oscillator.start();
+      oscillator.stop(audioContextRef.current.currentTime + 0.05);
+
       setSoundEnabled(true);
-    } catch {
-      setSoundEnabled(false);
+      setStatusText("Sound enabled");
+    } catch (error) {
+      console.error("Audio unlock error:", error);
+      setStatusText("Could not enable sound");
+      setDebugMessage(error?.message || "Audio unlock failed");
     }
   };
 
-  const startVoice = async () => {
+  const closeSession = useCallback(async () => {
     try {
-      await safeClose();
-
-      setPcStatus("connecting");
-      setElapsed(0);
-      setSoundEnabled(false);
-      setTrackYes(false);
-      setDcStatus("closed");
-      setSessionMsg("");
-
-      const instructions = buildLessonInstructions({
-        userName: userName || "Student",
-        levelNo: selectedLevel,
-        weekNo: selectedWeek,
-        dayNo: selectedDay,
-        lesson,
-      });
-
-      const r = await fetch("/api/realtime", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          voice: "marin",
-          instructions,
-        }),
-      });
-
-      const data = await r.json();
-
-      if (!r.ok) {
-        setPcStatus("error");
-        setSessionMsg(`Voice start failed: ${data?.error || "Unknown error"}`);
-        return;
+      if (dataChannelRef.current) {
+        try {
+          dataChannelRef.current.close();
+        } catch {}
+        dataChannelRef.current = null;
       }
 
-      const ephemeralKey = data?.client_secret?.value;
+      if (peerConnectionRef.current) {
+        try {
+          peerConnectionRef.current.getSenders().forEach((sender) => {
+            try {
+              sender.track?.stop();
+            } catch {}
+          });
+          peerConnectionRef.current.close();
+        } catch {}
+        peerConnectionRef.current = null;
+      }
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {}
+        });
+        localStreamRef.current = null;
+      }
+
+      if (remoteAudioRef.current) {
+        try {
+          remoteAudioRef.current.pause();
+          remoteAudioRef.current.srcObject = null;
+        } catch {}
+      }
+    } finally {
+      setIsSessionActive(false);
+      setIsConnecting(false);
+    }
+  }, []);
+
+  const finalizeScore = useCallback(() => {
+    const result = buildScoreCard({
+      utterances: userTranscript,
+      lesson,
+    });
+    setScoreCard(result);
+  }, [userTranscript, lesson]);
+
+  const handleRealtimeEvent = useCallback((event) => {
+    if (!event || typeof event !== "object") return;
+
+    const type = event.type || "";
+
+    if (type === "response.audio_transcript.delta") {
+      const delta = event.delta || "";
+      if (!delta) return;
+      setAiTranscript((prev) => {
+        const copy = [...prev];
+        if (copy.length === 0) {
+          copy.push(delta);
+        } else {
+          copy[copy.length - 1] = (copy[copy.length - 1] || "") + delta;
+        }
+        return copy;
+      });
+      return;
+    }
+
+    if (type === "response.audio_transcript.done") {
+      setAiTranscript((prev) => {
+        const copy = [...prev];
+        if (copy.length === 0) return prev;
+        copy.push("");
+        return copy;
+      });
+      return;
+    }
+
+    if (type === "conversation.item.input_audio_transcription.completed") {
+      const text = event.transcript || event.text || "";
+      if (text.trim()) {
+        setUserTranscript((prev) => [...prev, text.trim()]);
+      }
+      return;
+    }
+
+    if (type === "conversation.item.created") {
+      const item = event.item || {};
+      const role = item.role || "";
+      const content = Array.isArray(item.content) ? item.content : [];
+
+      const textParts = content
+        .map((c) => c?.transcript || c?.text || c?.value || "")
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+
+      if (!textParts) return;
+
+      if (role === "user") {
+        setUserTranscript((prev) => [...prev, textParts]);
+      } else if (role === "assistant") {
+        setAiTranscript((prev) => [...prev, textParts]);
+      }
+    }
+  }, []);
+
+  const startVoice = async () => {
+    if (isConnecting || isSessionActive) return;
+
+    resetSessionUi();
+    setIsConnecting(true);
+    setStatusText("Connecting...");
+
+    try {
+      if (!soundEnabled) {
+        await unlockAudio();
+      }
+
+      const tokenResponse = await fetch("/api/realtime", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const rawText = await tokenResponse.text();
+
+      let tokenData = null;
+      try {
+        tokenData = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        tokenData = null;
+      }
+
+      if (!tokenResponse.ok) {
+        const errorMessage =
+          tokenData?.details ||
+          tokenData?.error ||
+          rawText ||
+          `HTTP ${tokenResponse.status}`;
+        throw new Error(errorMessage);
+      }
+
+      const ephemeralKey =
+        tokenData?.client_secret?.value ||
+        tokenData?.client_secret ||
+        tokenData?.value ||
+        tokenData?.token ||
+        tokenData?.ephemeralKey ||
+        "";
+
+      const model =
+        tokenData?.model || "gpt-4o-realtime-preview-2024-12-17";
+
       if (!ephemeralKey) {
-        setPcStatus("error");
-        setSessionMsg("Voice start failed: missing client secret.");
-        return;
+        throw new Error("Realtime client_secret.value missing from /api/realtime");
       }
 
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
-      pcRef.current = pc;
+      const pc = new RTCPeerConnection();
+      peerConnectionRef.current = pc;
 
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected") {
-          setPcStatus("connected");
-          setSessionMsg(
-            `Connected — Amin Sir is ready for Level ${selectedLevel}, Week ${selectedWeek}, Day ${selectedDay}. Start speaking.`
-          );
-        }
-        if (
-          pc.connectionState === "failed" ||
-          pc.connectionState === "disconnected"
-        ) {
-          setPcStatus("error");
-        }
-        if (pc.connectionState === "closed") {
-          setPcStatus("closed");
+      const remoteAudio = new Audio();
+      remoteAudio.autoplay = true;
+      remoteAudio.playsInline = true;
+      remoteAudioRef.current = remoteAudio;
+
+      pc.ontrack = (event) => {
+        const [stream] = event.streams || [];
+        if (stream && remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = stream;
+          remoteAudioRef.current
+            .play()
+            .catch((err) => console.error("Remote audio play error:", err));
         }
       };
 
       const localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      localStreamRef.current = localStream;
+
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
       });
 
-      localStreamRef.current = localStream;
-      localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+      const dc = pc.createDataChannel("oai-events");
+      dataChannelRef.current = dc;
 
-      const remoteStream = new MediaStream();
-      remoteStreamRef.current = remoteStream;
+      dc.onopen = () => {
+        setStatusText("Connected");
 
-      pc.ontrack = async (event) => {
-        setTrackYes(true);
+        dc.send(
+          JSON.stringify({
+            type: "session.update",
+            session: {
+              modalities: ["text", "audio"],
+              instructions: lessonPrompt,
+              input_audio_transcription: {
+                model: "gpt-4o-mini-transcribe",
+              },
+            },
+          })
+        );
 
-        event.streams[0].getTracks().forEach((t) => {
-          remoteStream.addTrack(t);
-        });
+        dc.send(
+          JSON.stringify({
+            type: "response.create",
+            response: {
+              modalities: ["audio", "text"],
+              instructions: `Greet the student warmly and begin today's lesson: ${safeLessonTitle}.`,
+            },
+          })
+        );
+      };
 
-        if (audioRef.current) {
-          audioRef.current.srcObject = remoteStream;
-          try {
-            await audioRef.current.play();
-            setSoundEnabled(true);
-          } catch {
-            setSoundEnabled(false);
-          }
+      dc.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleRealtimeEvent(data);
+        } catch (err) {
+          console.error("Data channel parse error:", err);
         }
       };
 
-      const dc = pc.createDataChannel("oai-events");
-      dcRef.current = dc;
-
-      dc.onopen = () => {
-        setDcStatus("open");
-        startTimer();
-
-        dcSend({
-          type: "conversation.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `Start as Amin Sir in a natural teacher style. Greet ${userName} warmly. Tell ${userName} to answer in English. Today's lesson title is "${lesson?.title}". Today's vocabulary is "${vocabulary.join(", ")}". Speaking focus is "${lesson?.speakingFocus}". Ask only the first lesson-based question. Keep it short and natural.`,
-              },
-            ],
-          },
-        });
-
-        dcSend({
-          type: "response.create",
-          response: {
-            output_modalities: ["audio"],
-          },
-        });
+      dc.onerror = (err) => {
+        console.error("Data channel error:", err);
       };
 
-      dc.onclose = () => {
-        setDcStatus("closed");
-      };
-
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+      });
       await pc.setLocalDescription(offer);
 
-      const sdpResp = await fetch("https://api.openai.com/v1/realtime/calls", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${ephemeralKey}`,
-          "Content-Type": "application/sdp",
-        },
-        body: offer.sdp,
-      });
+      const sdpResponse = await fetch(
+        `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
+        {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            Authorization: `Bearer ${ephemeralKey}`,
+            "Content-Type": "application/sdp",
+          },
+        }
+      );
 
-      const answerSdp = await sdpResp.text();
+      const sdpText = await sdpResponse.text();
 
-      if (!sdpResp.ok) {
-        setPcStatus("error");
-        setSessionMsg("Realtime connection failed.");
-        return;
+      if (!sdpResponse.ok) {
+        throw new Error(sdpText || "Failed to connect realtime session");
       }
 
       await pc.setRemoteDescription({
         type: "answer",
-        sdp: answerSdp,
+        sdp: sdpText,
       });
-    } catch (err) {
-      setPcStatus("error");
-      setSessionMsg(`Voice start failed: ${err?.message || "Unknown error"}`);
+
+      setIsSessionActive(true);
+      setStatusText("Lesson live");
+    } catch (error) {
+      console.error("Start voice error:", error);
+      setDebugMessage(error?.message || "Unknown start voice error");
+      setStatusText("Connection failed");
+      await closeSession();
+    } finally {
+      setIsConnecting(false);
     }
   };
 
-  const logout = async () => {
-    await safeClose();
-    localStorage.removeItem("aminsir_user");
-    router.push("/login");
+  const stopVoice = async () => {
+    setStatusText("Stopping...");
+    await closeSession();
+    finalizeScore();
+    setStatusText("Stopped");
   };
-  return (
-    <div style={{ padding: 24, fontFamily: "system-ui" }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 12,
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
-        <h2 style={{ margin: 0 }}>Amin Sir AI Tutor</h2>
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            flexWrap: "wrap",
-          }}
-        >
-          <b>User: {userName || "..."}</b>
+  const transcriptPreview = useMemo(() => {
+    return userTranscript
+      .filter(Boolean)
+      .slice(-5)
+      .map((item, index) => `${index + 1}. ${item}`)
+      .join("\n");
+  }, [userTranscript]);
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="mx-auto w-full max-w-md px-4 pb-24 pt-4">
+        <div className="mb-4 flex items-center justify-between">
+          <button
+            onClick={() => router.push("/")}
+            className="rounded-xl bg-white px-3 py-2 text-sm font-medium shadow-sm ring-1 ring-slate-200"
+          >
+            Back
+          </button>
+
+          <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
+            {statusText}
+          </div>
+        </div>
+
+        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <h1 className="text-xl font-bold">Amin Sir AI Speaking Coach</h1>
+          <p className="mt-1 text-sm text-slate-600">
+            Mobile lesson speaking practice
+          </p>
+        </div>
+
+        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <h2 className="mb-3 text-base font-bold">Choose Lesson</h2>
+
+          <div className="grid grid-cols-1 gap-3">
+            <div>
+              <label className="mb-1 block text-sm font-medium">Level</label>
+              <select
+                value={selectedLevel}
+                onChange={(e) => {
+                  const nextLevel = Number(e.target.value);
+                  setSelectedLevel(nextLevel);
+                  setSelectedWeek(1);
+                  setSelectedDay(1);
+                }}
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none"
+              >
+                {levels.map((lvl) => (
+                  <option key={lvl.level} value={lvl.level}>
+                    Level {lvl.level} (
+                    {Array.isArray(lvl.weeks) ? lvl.weeks.length : 0} weeks)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium">Week</label>
+              <select
+                value={selectedWeek}
+                onChange={(e) => {
+                  setSelectedWeek(Number(e.target.value));
+                  setSelectedDay(1);
+                }}
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none"
+              >
+                {weeks.map((wk) => (
+                  <option key={wk.week} value={wk.week}>
+                    Week {wk.week}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium">Day</label>
+              <select
+                value={selectedDay}
+                onChange={(e) => setSelectedDay(Number(e.target.value))}
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none"
+              >
+                {days.map((d) => (
+                  <option key={d.day} value={d.day}>
+                    Day {d.day}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-4 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 p-4 text-white shadow-sm">
+          <div className="text-xs font-semibold uppercase tracking-wide opacity-90">
+            Lesson of the Day
+          </div>
+          <div className="mt-2 text-lg font-bold">{safeLessonTitle}</div>
+
+          {lesson?.description ? (
+            <p className="mt-2 text-sm leading-6 text-blue-50">
+              {lesson.description}
+            </p>
+          ) : null}
+
+          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+            <span className="rounded-full bg-white/15 px-3 py-1">
+              Level {selectedLevel}
+            </span>
+            <span className="rounded-full bg-white/15 px-3 py-1">
+              Week {selectedWeek}
+            </span>
+            <span className="rounded-full bg-white/15 px-3 py-1">
+              Day {selectedDay}
+            </span>
+          </div>
+        </div>
+
+        <div className="mb-4 grid grid-cols-1 gap-3">
+          <button
+            onClick={unlockAudio}
+            className="rounded-2xl bg-emerald-600 px-4 py-4 text-sm font-bold text-white shadow-sm active:scale-[0.99]"
+          >
+            Enable Sound
+          </button>
 
           <button
-            onClick={logout}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 12,
-              border: "1px solid #ddd",
-              cursor: "pointer",
-              fontWeight: 800,
-              background: "white",
-            }}
+            onClick={startVoice}
+            disabled={isConnecting || isSessionActive}
+            className={`rounded-2xl px-4 py-4 text-sm font-bold text-white shadow-sm active:scale-[0.99] ${
+              isConnecting || isSessionActive ? "bg-slate-400" : "bg-blue-600"
+            }`}
           >
-            Logout
+            {isConnecting ? "Connecting..." : "Start Voice"}
+          </button>
+
+          <button
+            onClick={stopVoice}
+            disabled={!isSessionActive && !isConnecting}
+            className={`rounded-2xl px-4 py-4 text-sm font-bold text-white shadow-sm active:scale-[0.99] ${
+              !isSessionActive && !isConnecting ? "bg-slate-400" : "bg-rose-600"
+            }`}
+          >
+            Stop
           </button>
         </div>
-      </div>
 
-      <div
-        style={{
-          marginTop: 18,
-          padding: 16,
-          borderRadius: 16,
-          background: "#ffffff",
-          border: "1px solid #e5e7eb",
-        }}
-      >
-        <div style={{ fontSize: 20, fontWeight: 1000, marginBottom: 10 }}>
-          🪜 Level Selector
-        </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {Array.from({ length: maxLevel }, (_, i) => i + 1).map((level) => (
-            <button
-              key={level}
-              onClick={() => {
-                setSelectedLevel(level);
-                setSelectedWeek(1);
-                setSelectedDay(1);
-              }}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 12,
-                border: selectedLevel === level ? "2px solid #111827" : "1px solid #ddd",
-                background: selectedLevel === level ? "#dcfce7" : "white",
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
-              Level {level}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ marginTop: 16, fontSize: 20, fontWeight: 1000, marginBottom: 10 }}>
-          📅 Week Selector
-        </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {Array.from({ length: maxWeek }, (_, i) => i + 1).map((week) => (
-            <button
-              key={week}
-              onClick={() => {
-                setSelectedWeek(week);
-                setSelectedDay(1);
-              }}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 12,
-                border: selectedWeek === week ? "2px solid #111827" : "1px solid #ddd",
-                background: selectedWeek === week ? "#dbeafe" : "white",
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
-              Week {week}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ marginTop: 16, fontSize: 20, fontWeight: 1000, marginBottom: 10 }}>
-          📘 Day Selector
-        </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {Array.from({ length: maxDay }, (_, i) => i + 1).map((day) => (
-            <button
-              key={day}
-              onClick={() => setSelectedDay(day)}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 12,
-                border: selectedDay === day ? "2px solid #111827" : "1px solid #ddd",
-                background: selectedDay === day ? "#fef3c7" : "white",
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
-              Day {day}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div
-        style={{
-          marginTop: 18,
-          padding: 16,
-          borderRadius: 16,
-          background: "#ffffff",
-          border: "1px solid #e5e7eb",
-        }}
-      >
-        <div style={{ fontSize: 22, fontWeight: 1000 }}>
-          🟢 Level {selectedLevel} – Week {selectedWeek}
-        </div>
-        <div style={{ marginTop: 6, fontSize: 18, fontWeight: 800 }}>
-          Day {selectedDay}
-        </div>
-
-        <div style={{ marginTop: 12, fontSize: 20, fontWeight: 1000 }}>
-          📘 Lesson of the Day
-        </div>
-        <div style={{ marginTop: 8, fontSize: 26, fontWeight: 1000 }}>
-          {lesson?.title || "Current Lesson"}
-        </div>
-
-        <div style={{ marginTop: 6, fontSize: 16 }}>
-          <b>Vocabulary:</b> {vocabulary.length ? vocabulary.join(", ") : "—"}
-        </div>
-
-        <div style={{ marginTop: 6, fontSize: 16 }}>
-          <b>Speaking Focus:</b> {lesson?.speakingFocus || "—"}
-        </div>
-
-        <div style={{ marginTop: 6, fontSize: 16 }}>
-          <b>Practice Prompt:</b> {lesson?.practicePrompt || "—"}
-        </div>
-
-        {lesson?.grammarHintHindi ? (
-          <div style={{ marginTop: 6, fontSize: 16 }}>
-            <b>Hindi Help:</b> {lesson.grammarHintHindi}
+        {debugMessage ? (
+          <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+            <div className="text-sm font-bold text-rose-800">Connection Error</div>
+            <div className="mt-2 whitespace-pre-wrap break-words text-sm text-rose-700">
+              {debugMessage}
+            </div>
           </div>
         ) : null}
-      </div>
 
-      <div style={{ marginTop: 14, fontSize: 18, fontWeight: 800 }}>
-        Status: PC: {pcStatus === "connected" ? "connected ✅" : pcStatus}
-      </div>
+        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <h2 className="text-base font-bold">Speaking Score</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Score appears after you press Stop
+          </p>
 
-      <div style={{ marginTop: 14, fontSize: 20, fontWeight: 900 }}>
-        Step: Tap Enable Sound 🔊 first, then Start Voice 🎤
-      </div>
+          {!scoreCard ? (
+            <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
+              Finish one speaking session to see score, feedback, and lesson relevance.
+            </div>
+          ) : (
+            <div className="mt-4 space-y-3">
+              <div className="rounded-2xl bg-slate-900 p-4 text-white">
+                <div className="text-sm opacity-80">Overall Score</div>
+                <div className="mt-1 text-4xl font-extrabold">
+                  {scoreCard.overall}/100
+                </div>
+                <div className="mt-2 inline-flex rounded-full bg-white/10 px-3 py-1 text-sm font-semibold">
+                  {scoreCard.status}
+                </div>
+              </div>
 
-      <div style={{ marginTop: 10, fontSize: 18, fontWeight: 800 }}>
-        DC: {dcStatus === "open" ? "Open ✅" : "Closed"} | Track:{" "}
-        {trackYes ? "Yes ✅" : "No"} | Sound:{" "}
-        {soundEnabled ? "Enabled ✅" : "Locked"}
-      </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <div className="text-xs text-slate-500">Participation</div>
+                  <div className="mt-1 text-lg font-bold">
+                    {scoreCard.participationScore}
+                  </div>
+                </div>
 
-      <div
-        style={{
-          marginTop: 18,
-          display: "flex",
-          gap: 14,
-          flexWrap: "wrap",
-        }}
-      >
-        <button
-          onClick={enableSound}
-          style={{
-            padding: "14px 22px",
-            borderRadius: 16,
-            border: "1px solid #b7e4b7",
-            cursor: "pointer",
-            fontWeight: 900,
-            fontSize: 18,
-            background: "#eaf7ea",
-          }}
-        >
-          Enable Sound 🔊 {soundEnabled ? "✅" : ""}
-        </button>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <div className="text-xs text-slate-500">Fluency</div>
+                  <div className="mt-1 text-lg font-bold">
+                    {scoreCard.fluencyScore}
+                  </div>
+                </div>
 
-        <button
-          onClick={startVoice}
-          style={{
-            padding: "14px 22px",
-            borderRadius: 16,
-            border: "none",
-            cursor: "pointer",
-            fontWeight: 900,
-            fontSize: 18,
-            background: "black",
-            color: "white",
-          }}
-        >
-          Start Voice 🎤
-        </button>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <div className="text-xs text-slate-500">Pronunciation</div>
+                  <div className="mt-1 text-lg font-bold">
+                    {scoreCard.pronunciationScore}
+                  </div>
+                </div>
 
-        <button
-          onClick={() => {
-            safeClose();
-            setSessionMsg("Session finished. Tap Start Voice to practice again.");
-          }}
-          style={{
-            padding: "14px 22px",
-            borderRadius: 16,
-            border: "1px solid #ddd",
-            cursor: "pointer",
-            fontWeight: 900,
-            fontSize: 18,
-            background: "white",
-          }}
-        >
-          Stop
-        </button>
-      </div>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <div className="text-xs text-slate-500">Lesson Match</div>
+                  <div className="mt-1 text-lg font-bold">
+                    {scoreCard.lessonRelevanceScore}
+                  </div>
+                </div>
+              </div>
 
-      <audio ref={audioRef} autoPlay playsInline />
+              <div className="rounded-xl border border-slate-200 p-3">
+                <div className="text-sm font-semibold">Session Details</div>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-lg bg-slate-50 p-2">
+                    <div className="text-xs text-slate-500">Turns</div>
+                    <div className="text-base font-bold">
+                      {scoreCard.turnCount}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 p-2">
+                    <div className="text-xs text-slate-500">Words</div>
+                    <div className="text-base font-bold">
+                      {scoreCard.totalWords}
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 p-2">
+                    <div className="text-xs text-slate-500">Avg/Turn</div>
+                    <div className="text-base font-bold">
+                      {scoreCard.avgWordsPerTurn}
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-      <div style={{ marginTop: 16, fontWeight: 900, fontSize: 18 }}>
-        Session Time: {formatTime(elapsed)}
-      </div>
+              <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
+                <div className="font-semibold">Feedback</div>
+                <div className="mt-1">{scoreCard.feedback}</div>
+              </div>
 
-      {sessionMsg && (
-        <div style={{ marginTop: 12, fontWeight: 700 }}>
-          {sessionMsg}
+              {scoreCard.matchedKeywords?.length > 0 ? (
+                <div className="rounded-xl bg-emerald-50 p-3">
+                  <div className="text-sm font-semibold text-emerald-900">
+                    Lesson words you used
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {scoreCard.matchedKeywords.slice(0, 10).map((word) => (
+                      <span
+                        key={word}
+                        className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800"
+                      >
+                        {word}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
-      )}
+
+        <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <h2 className="text-base font-bold">Recent Student Speech</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Last captured speaking lines
+          </p>
+
+          <div className="mt-3 min-h-[100px] whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+            {transcriptPreview || "No student speech captured yet."}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
