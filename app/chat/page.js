@@ -12,7 +12,7 @@ export default function ChatPage() {
   const [trackYes, setTrackYes] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-
+const [sessionMsg, setSessionMsg] = useState("");
   const pcRef = useRef(null);
   const dcRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -127,10 +127,11 @@ export default function ChatPage() {
       await safeClose();
 
       setPcStatus("connecting");
-      setElapsed(0);
-      setSoundEnabled(false);
-      setTrackYes(false);
-      setDcStatus("closed");
+setElapsed(0);
+setSoundEnabled(false);
+setTrackYes(false);
+setDcStatus("closed");
+setSessionMsg("");
 
       const instructions = `You are Amin Sir AI Voice Tutor. Student name is ${userName}.
 Speak mostly English and use simple Hindi only when needed (80/20).
@@ -383,7 +384,10 @@ Correct gently and continue.`;
         </button>
 
         <button
-          onClick={safeClose}
+onClick={() => {
+safeClose();
+setSessionMsg("Session finished. Tap Start Voice to practice again.");
+}}
           style={{
             padding: "14px 22px",
             borderRadius: 16,
@@ -399,10 +403,15 @@ Correct gently and continue.`;
       </div>
 
       <audio ref={audioRef} autoPlay playsInline />
+<div style={{ marginTop: 16, fontWeight: 900, fontSize: 18 }}>
+  Session Time: {formatTime(elapsed)}
+</div>
 
-      <div style={{ marginTop: 16, fontWeight: 900, fontSize: 18 }}>
-        Session Time: {formatTime(elapsed)}
-      </div>
-    </div>
-  );
+{sessionMsg && (
+  <div style={{ marginTop: 12, fontWeight: 700 }}>
+    {sessionMsg}
+  </div>
+)}
+</div>
+);
 }
