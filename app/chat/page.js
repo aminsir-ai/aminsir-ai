@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { COURSE_DATA, getLessonWithContext } from "@/lib/courseData";
 
@@ -58,6 +64,10 @@ function round(num) {
   return Math.round(num);
 }
 
+function clamp(num, min, max) {
+  return Math.max(min, Math.min(max, num));
+}
+
 function normalizePhraseText(text) {
   return String(text || "")
     .toLowerCase()
@@ -65,10 +75,6 @@ function normalizePhraseText(text) {
     .replace(/[^a-z0-9\s']/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function clamp(num, min, max) {
-  return Math.max(min, Math.min(max, num));
 }
 
 function getPhraseObjects(lesson) {
@@ -115,20 +121,6 @@ function getIdiomObjects(lesson) {
       };
     })
     .filter((item) => item.idiom);
-}
-
-function getLessonTargetPhrases(phraseObjects) {
-  if (!Array.isArray(phraseObjects)) return [];
-  return phraseObjects
-    .map((item) => String(item?.english || "").trim())
-    .filter(Boolean);
-}
-
-function getLessonTargetIdioms(idiomObjects) {
-  if (!Array.isArray(idiomObjects)) return [];
-  return idiomObjects
-    .map((item) => String(item?.idiom || "").trim())
-    .filter(Boolean);
 }
 
 function getUsedTargets(utterances, targets) {
@@ -192,17 +184,19 @@ function buildScoreCard({
   const idiomStats = getTargetStats(utterances, idiomTargets);
 
   let participationScore = 0;
-  if (turnCount >= 8) participationScore = 90;
-  else if (turnCount >= 6) participationScore = 80;
-  else if (turnCount >= 4) participationScore = 70;
-  else if (turnCount >= 2) participationScore = 55;
+  if (turnCount >= 10) participationScore = 92;
+  else if (turnCount >= 8) participationScore = 86;
+  else if (turnCount >= 6) participationScore = 78;
+  else if (turnCount >= 4) participationScore = 68;
+  else if (turnCount >= 2) participationScore = 54;
   else if (turnCount >= 1) participationScore = 40;
   else participationScore = 20;
 
   let fluencyScore = 0;
-  if (avgWordsPerTurn >= 10) fluencyScore = 88;
-  else if (avgWordsPerTurn >= 7) fluencyScore = 76;
-  else if (avgWordsPerTurn >= 4) fluencyScore = 62;
+  if (avgWordsPerTurn >= 14) fluencyScore = 90;
+  else if (avgWordsPerTurn >= 10) fluencyScore = 82;
+  else if (avgWordsPerTurn >= 7) fluencyScore = 72;
+  else if (avgWordsPerTurn >= 4) fluencyScore = 60;
   else if (avgWordsPerTurn >= 1) fluencyScore = 45;
   else fluencyScore = 20;
 
@@ -212,7 +206,7 @@ function buildScoreCard({
   } else if (practiceMode === "idiom" && idiomStats.total > 0) {
     usageScore = clamp(round(35 + idiomStats.percentage * 0.6), 20, 98);
   } else {
-    usageScore = totalWords >= 30 ? 75 : totalWords >= 15 ? 60 : 40;
+    usageScore = totalWords >= 40 ? 80 : totalWords >= 20 ? 64 : 42;
   }
 
   const overall = clamp(
@@ -228,10 +222,15 @@ function buildScoreCard({
   else if (overall >= 60) status = "Good Start";
 
   let feedback = "Try to speak more in full sentences.";
-  if (overall >= 90) feedback = "Excellent speaking. Keep going.";
-  else if (overall >= 80) feedback = "Very good work. Speak a little longer.";
-  else if (overall >= 70) feedback = "Good job. Keep practicing daily.";
-  else if (overall >= 60) feedback = "Good start. Try to speak more clearly.";
+  if (overall >= 90) {
+    feedback = "Excellent speaking. Keep the same confidence.";
+  } else if (overall >= 80) {
+    feedback = "Very good work. Try slightly longer answers.";
+  } else if (overall >= 70) {
+    feedback = "Good job. Keep practicing every day.";
+  } else if (overall >= 60) {
+    feedback = "Good start. Speak more clearly and confidently.";
+  }
 
   return {
     overall,
@@ -262,11 +261,21 @@ export default function ChatPage() {
 
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [statusText, setStatusText] = useState("Ready");
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isSessionActive, setIsSessionActive] = useState(false);
 
+  const [aiTranscript, setAiTranscript] = useState([]);
   const [userTranscript, setUserTranscript] = useState([]);
   const [scoreCard, setScoreCard] = useState(null);
+  const [debugMessage, setDebugMessage] = useState("");
 
+  const peerConnectionRef = useRef(null);
+  const dataChannelRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const remoteAudioRef = useRef(null);
   const audioContextRef = useRef(null);
+
+  const latestUserTranscriptRef = useRef([]);
 
   const levels = useMemo(() => getLevels(), []);
   const weeks = useMemo(() => getWeeks(selectedLevel), [selectedLevel]);
@@ -282,16 +291,6 @@ export default function ChatPage() {
   const phraseObjects = useMemo(() => getPhraseObjects(lesson), [lesson]);
   const idiomObjects = useMemo(() => getIdiomObjects(lesson), [lesson]);
 
-  const targetPhrases = useMemo(
-    () => getLessonTargetPhrases(phraseObjects),
-    [phraseObjects]
-  );
-
-  const targetIdioms = useMemo(
-    () => getLessonTargetIdioms(idiomObjects),
-    [idiomObjects]
-  );
-
   const currentPhrase = useMemo(() => {
     if (practiceMode === "phrase" && phraseObjects.length > 0) {
       return phraseObjects[currentPhraseIndex] || phraseObjects[0];
@@ -304,13 +303,37 @@ export default function ChatPage() {
     return null;
   }, [practiceMode, phraseObjects, idiomObjects, currentPhraseIndex]);
 
+  const activePhraseTargets = useMemo(() => {
+    if (practiceMode === "phrase" && currentPhrase?.english) {
+      return [currentPhrase.english];
+    }
+
+    if (practiceMode === "normal" && phraseObjects.length > 0) {
+      return phraseObjects.slice(0, 5).map((item) => item.english);
+    }
+
+    return [];
+  }, [practiceMode, currentPhrase, phraseObjects]);
+
+  const activeIdiomTargets = useMemo(() => {
+    if (practiceMode === "idiom" && currentPhrase?.idiom) {
+      return [currentPhrase.idiom];
+    }
+
+    return [];
+  }, [practiceMode, currentPhrase]);
+
   const livePhraseStats = useMemo(() => {
-    return getTargetStats(userTranscript, targetPhrases);
-  }, [userTranscript, targetPhrases]);
+    return getTargetStats(userTranscript, activePhraseTargets);
+  }, [userTranscript, activePhraseTargets]);
 
   const liveIdiomStats = useMemo(() => {
-    return getTargetStats(userTranscript, targetIdioms);
-  }, [userTranscript, targetIdioms]);
+    return getTargetStats(userTranscript, activeIdiomTargets);
+  }, [userTranscript, activeIdiomTargets]);
+
+  useEffect(() => {
+    latestUserTranscriptRef.current = userTranscript;
+  }, [userTranscript]);
 
   useEffect(() => {
     try {
@@ -347,10 +370,134 @@ export default function ChatPage() {
   useEffect(() => {
     setCurrentPhraseIndex(0);
     setUserTranscript([]);
+    setAiTranscript([]);
     setScoreCard(null);
+    setDebugMessage("");
+    setStatusText("Ready");
   }, [selectedLevel, selectedWeek, selectedDay, practiceMode]);
 
-  async function unlockAudio() {
+  const safeLessonTitle =
+    lesson?.title ||
+    `Level ${selectedLevel} Week ${selectedWeek} Day ${selectedDay}`;
+
+  const lessonPrompt = useMemo(() => {
+    const phraseText =
+      practiceMode === "phrase" && currentPhrase?.english
+        ? currentPhrase.english
+        : "";
+
+    const phraseCue =
+      practiceMode === "phrase" && currentPhrase?.cue
+        ? currentPhrase.cue
+        : "";
+
+    const idiomText =
+      practiceMode === "idiom" && currentPhrase?.idiom
+        ? currentPhrase.idiom
+        : "";
+
+    const idiomMeaning =
+      practiceMode === "idiom" && currentPhrase?.meaning
+        ? currentPhrase.meaning
+        : "";
+
+    const idiomExample =
+      practiceMode === "idiom" && currentPhrase?.example
+        ? currentPhrase.example
+        : "";
+
+    if (practiceMode === "phrase") {
+      return `
+You are Amin Sir AI Speaking Coach.
+
+Mode: Phrase Practice
+
+Teach only one phrase at a time.
+Today's phrase is: "${phraseText}"
+
+Phrase cue: ${phraseCue || "Help the student use this phrase naturally."}
+
+Instructions:
+- Speak in very simple English
+- Keep sentences short
+- First say the phrase clearly
+- Ask the student to repeat the phrase
+- Then ask the student to make one short sentence using the phrase
+- Encourage the student kindly
+- Correct gently
+- Do not switch to another phrase unless asked
+- Do not give long explanations
+- Let the student speak more than you
+
+Start by greeting the student and introducing today's phrase practice.
+      `.trim();
+    }
+
+    if (practiceMode === "idiom") {
+      return `
+You are Amin Sir AI Speaking Coach.
+
+Mode: Idiom Practice
+
+Teach only one idiom at a time.
+Today's idiom is: "${idiomText}"
+Meaning: "${idiomMeaning}"
+Example: "${idiomExample}"
+
+Instructions:
+- Speak in simple English
+- Keep sentences short
+- Explain the idiom in a very easy way
+- Say the example clearly
+- Ask the student to repeat the idiom
+- Ask the student to make one simple sentence using the idiom
+- Encourage the student kindly
+- Correct gently
+- Do not teach multiple idioms at once
+- Do not give long explanations
+- Let the student speak more than you
+
+Start by greeting the student and introducing today's idiom practice.
+      `.trim();
+    }
+
+    return `
+You are Amin Sir AI Speaking Coach.
+
+Mode: Normal Lesson Practice
+
+Student lesson details:
+- Level: ${selectedLevel}
+- Week: ${selectedWeek}
+- Day: ${selectedDay}
+- Lesson title: ${lesson?.title || ""}
+- Meaning: ${lesson?.meaning || ""}
+- Speaking focus: ${lesson?.speakingFocus || ""}
+- Practice prompt: ${lesson?.practicePrompt || ""}
+- Example: ${lesson?.example || ""}
+
+Instructions:
+- Speak in simple English
+- Keep sentences short
+- Focus only on today's lesson
+- Ask one short question at a time
+- Encourage the student to speak more
+- Correct gently
+- Do not give long explanations
+- Let the student speak more than you
+
+Start by greeting the student and beginning today's lesson.
+    `.trim();
+  }, [
+    practiceMode,
+    currentPhrase,
+    selectedLevel,
+    selectedWeek,
+    selectedDay,
+    lesson,
+  ]);
+
+  const unlockAudio = async () => {
     try {
       if (!audioContextRef.current) {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -361,56 +508,328 @@ export default function ChatPage() {
         await audioContextRef.current.resume();
       }
 
+      const oscillator = audioContextRef.current.createOscillator();
+      const gain = audioContextRef.current.createGain();
+      gain.gain.value = 0.0001;
+      oscillator.connect(gain);
+      gain.connect(audioContextRef.current.destination);
+      oscillator.start();
+      oscillator.stop(audioContextRef.current.currentTime + 0.05);
+
       setSoundEnabled(true);
       setStatusText("Sound enabled");
-    } catch {
+    } catch (error) {
+      console.error("Audio unlock error:", error);
       setStatusText("Could not enable sound");
+      setDebugMessage(error?.message || "Audio unlock failed");
     }
-  }
+  };
 
-  function startPractice() {
-    setStatusText(
-      practiceMode === "phrase"
-        ? "Phrase mode ready"
-        : practiceMode === "idiom"
-        ? "Idiom mode ready"
-        : "Lesson mode ready"
-    );
-  }
+  const handleRealtimeEvent = useCallback((event) => {
+    if (!event || typeof event !== "object") return;
 
-  function stopPractice() {
+    const type = event.type || "";
+
+    if (type === "response.audio_transcript.delta") {
+      const delta = event.delta || "";
+      if (!delta) return;
+
+      setAiTranscript((prev) => {
+        const copy = [...prev];
+        if (copy.length === 0) {
+          copy.push(delta);
+        } else {
+          copy[copy.length - 1] = (copy[copy.length - 1] || "") + delta;
+        }
+        return copy;
+      });
+      return;
+    }
+
+    if (type === "response.audio_transcript.done") {
+      setAiTranscript((prev) => {
+        const copy = [...prev];
+        if (copy.length === 0) return prev;
+        copy.push("");
+        return copy;
+      });
+      return;
+    }
+
+    if (type === "conversation.item.input_audio_transcription.completed") {
+      const text = event.transcript || event.text || "";
+      if (text.trim()) {
+        setUserTranscript((prev) => [...prev, text.trim()]);
+      }
+      return;
+    }
+
+    if (type === "conversation.item.created") {
+      const item = event.item || {};
+      const role = item.role || "";
+      const content = Array.isArray(item.content) ? item.content : [];
+
+      const textParts = content
+        .map((c) => c?.transcript || c?.text || c?.value || "")
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+
+      if (!textParts) return;
+
+      if (role === "user") {
+        setUserTranscript((prev) => [...prev, textParts]);
+      } else if (role === "assistant") {
+        setAiTranscript((prev) => [...prev, textParts]);
+      }
+    }
+  }, []);
+
+  const closeSession = useCallback(async () => {
+    try {
+      if (dataChannelRef.current) {
+        try {
+          dataChannelRef.current.close();
+        } catch {}
+        dataChannelRef.current = null;
+      }
+
+      if (peerConnectionRef.current) {
+        try {
+          peerConnectionRef.current.getSenders().forEach((sender) => {
+            try {
+              sender.track?.stop();
+            } catch {}
+          });
+          peerConnectionRef.current.close();
+        } catch {}
+        peerConnectionRef.current = null;
+      }
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {}
+        });
+        localStreamRef.current = null;
+      }
+
+      if (remoteAudioRef.current) {
+        try {
+          remoteAudioRef.current.pause();
+          remoteAudioRef.current.srcObject = null;
+        } catch {}
+      }
+    } finally {
+      setIsSessionActive(false);
+      setIsConnecting(false);
+    }
+  }, []);
+
+  const finalizeScore = useCallback(() => {
     const result = buildScoreCard({
-      utterances: userTranscript,
+      utterances: latestUserTranscriptRef.current || [],
       lesson,
       practiceMode,
-      phraseTargets: targetPhrases,
-      idiomTargets: targetIdioms,
+      phraseTargets: activePhraseTargets,
+      idiomTargets: activeIdiomTargets,
     });
 
     setScoreCard(result);
-    setStatusText("Stopped");
-  }
+  }, [lesson, practiceMode, activePhraseTargets, activeIdiomTargets]);
 
-  function addTestLine() {
-    if (practiceMode === "phrase" && currentPhrase?.english) {
-      setUserTranscript((prev) => [...prev, currentPhrase.english]);
-      return;
+  const startVoice = async () => {
+    if (isConnecting || isSessionActive) return;
+
+    setUserTranscript([]);
+    setAiTranscript([]);
+    setScoreCard(null);
+    setDebugMessage("");
+    setIsConnecting(true);
+
+    if (practiceMode === "phrase") {
+      setStatusText("Phrase mode active");
+    } else if (practiceMode === "idiom") {
+      setStatusText("Idiom mode active");
+    } else {
+      setStatusText("Lesson mode active");
     }
 
-    if (practiceMode === "idiom" && currentPhrase?.idiom) {
-      setUserTranscript((prev) => [...prev, currentPhrase.idiom]);
-      return;
+    try {
+      if (!soundEnabled) {
+        await unlockAudio();
+      }
+
+      const tokenResponse = await fetch("/api/realtime", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const rawText = await tokenResponse.text();
+
+      let tokenData = null;
+      try {
+        tokenData = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        tokenData = null;
+      }
+
+      if (!tokenResponse.ok) {
+        const errorMessage =
+          tokenData?.details ||
+          tokenData?.error ||
+          rawText ||
+          `HTTP ${tokenResponse.status}`;
+        throw new Error(errorMessage);
+      }
+
+      const ephemeralKey =
+        tokenData?.client_secret?.value ||
+        tokenData?.client_secret ||
+        tokenData?.value ||
+        tokenData?.token ||
+        tokenData?.ephemeralKey ||
+        "";
+
+      const model =
+        tokenData?.model || "gpt-4o-realtime-preview-2024-12-17";
+
+      if (!ephemeralKey) {
+        throw new Error("Realtime client_secret.value missing from /api/realtime");
+      }
+
+      const pc = new RTCPeerConnection();
+      peerConnectionRef.current = pc;
+
+      const remoteAudio = new Audio();
+      remoteAudio.autoplay = true;
+      remoteAudio.playsInline = true;
+      remoteAudioRef.current = remoteAudio;
+
+      pc.ontrack = (event) => {
+        const [stream] = event.streams || [];
+        if (stream && remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = stream;
+          remoteAudioRef.current
+            .play()
+            .catch((err) => console.error("Remote audio play error:", err));
+        }
+      };
+
+      const localStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      localStreamRef.current = localStream;
+
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
+      });
+
+      const dc = pc.createDataChannel("oai-events");
+      dataChannelRef.current = dc;
+
+      dc.onopen = () => {
+        dc.send(
+          JSON.stringify({
+            type: "session.update",
+            session: {
+              modalities: ["text", "audio"],
+              instructions: lessonPrompt,
+              input_audio_transcription: {
+                model: "gpt-4o-mini-transcribe",
+              },
+            },
+          })
+        );
+
+        dc.send(
+          JSON.stringify({
+            type: "response.create",
+            response: {
+              modalities: ["audio", "text"],
+              instructions: lessonPrompt,
+            },
+          })
+        );
+      };
+
+      dc.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleRealtimeEvent(data);
+        } catch (err) {
+          console.error("Data channel parse error:", err);
+        }
+      };
+
+      dc.onerror = (err) => {
+        console.error("Data channel error:", err);
+      };
+
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+      });
+      await pc.setLocalDescription(offer);
+
+      const sdpResponse = await fetch(
+        `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
+        {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            Authorization: `Bearer ${ephemeralKey}`,
+            "Content-Type": "application/sdp",
+          },
+        }
+      );
+
+      const sdpText = await sdpResponse.text();
+
+      if (!sdpResponse.ok) {
+        throw new Error(sdpText || "Failed to connect realtime session");
+      }
+
+      await pc.setRemoteDescription({
+        type: "answer",
+        sdp: sdpText,
+      });
+
+      setIsSessionActive(true);
+    } catch (error) {
+      console.error("Start voice error:", error);
+      setDebugMessage(error?.message || "Unknown start voice error");
+      setStatusText("Connection failed");
+      await closeSession();
+    } finally {
+      setIsConnecting(false);
     }
+  };
 
-    setUserTranscript((prev) => [
-      ...prev,
-      lesson?.example || "I am practicing English.",
-    ]);
-  }
+  const stopVoice = async () => {
+    await closeSession();
+    finalizeScore();
+    setStatusText("Ready");
+  };
 
-  const safeLessonTitle =
-    lesson?.title ||
-    `Level ${selectedLevel} Week ${selectedWeek} Day ${selectedDay}`;
+  const transcriptPreview = useMemo(() => {
+    return userTranscript
+      .filter(Boolean)
+      .slice(-8)
+      .map((item, index) => `${index + 1}. ${item}`)
+      .join("\n");
+  }, [userTranscript]);
+
+  const aiPreview = useMemo(() => {
+    return aiTranscript
+      .filter((item) => String(item || "").trim())
+      .slice(-5)
+      .join("\n\n");
+  }, [aiTranscript]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -431,7 +850,7 @@ export default function ChatPage() {
         <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
           <h1 className="text-xl font-bold">Amin Sir AI Speaking Coach</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Lesson, phrase and idiom speaking practice
+            Live lesson, phrase and idiom speaking practice
           </p>
         </div>
 
@@ -500,33 +919,36 @@ export default function ChatPage() {
           <div className="grid grid-cols-3 gap-3">
             <button
               onClick={() => setPracticeMode("normal")}
+              disabled={isConnecting || isSessionActive}
               className={`rounded-2xl px-4 py-3 text-sm font-bold shadow-sm ${
                 practiceMode === "normal"
                   ? "bg-blue-600 text-white"
                   : "bg-slate-100 text-slate-700 ring-1 ring-slate-200"
-              }`}
+              } ${isConnecting || isSessionActive ? "opacity-60" : ""}`}
             >
               Normal
             </button>
 
             <button
               onClick={() => setPracticeMode("phrase")}
+              disabled={isConnecting || isSessionActive}
               className={`rounded-2xl px-4 py-3 text-sm font-bold shadow-sm ${
                 practiceMode === "phrase"
                   ? "bg-amber-500 text-white"
                   : "bg-slate-100 text-slate-700 ring-1 ring-slate-200"
-              }`}
+              } ${isConnecting || isSessionActive ? "opacity-60" : ""}`}
             >
               Phrase
             </button>
 
             <button
               onClick={() => setPracticeMode("idiom")}
+              disabled={isConnecting || isSessionActive}
               className={`rounded-2xl px-4 py-3 text-sm font-bold shadow-sm ${
                 practiceMode === "idiom"
                   ? "bg-violet-600 text-white"
                   : "bg-slate-100 text-slate-700 ring-1 ring-slate-200"
-              }`}
+              } ${isConnecting || isSessionActive ? "opacity-60" : ""}`}
             >
               Idiom
             </button>
@@ -550,9 +972,13 @@ export default function ChatPage() {
               <div className="text-xs uppercase tracking-wide text-amber-100">
                 English Phrase
               </div>
-              <div className="mt-2 text-lg font-bold">{currentPhrase.english}</div>
+              <div className="mt-2 text-lg font-bold">
+                {currentPhrase.english}
+              </div>
               {currentPhrase.cue ? (
-                <div className="mt-3 text-sm text-white/95">{currentPhrase.cue}</div>
+                <div className="mt-3 text-sm text-white/95">
+                  {currentPhrase.cue}
+                </div>
               ) : null}
             </div>
 
@@ -561,7 +987,8 @@ export default function ChatPage() {
                 onClick={() =>
                   setCurrentPhraseIndex((prev) => Math.max(prev - 1, 0))
                 }
-                className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-amber-700"
+                disabled={isConnecting || isSessionActive}
+                className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-amber-700 disabled:opacity-60"
               >
                 Previous
               </button>
@@ -571,7 +998,8 @@ export default function ChatPage() {
                     Math.min(prev + 1, phraseObjects.length - 1)
                   )
                 }
-                className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-amber-700"
+                disabled={isConnecting || isSessionActive}
+                className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-amber-700 disabled:opacity-60"
               >
                 Next
               </button>
@@ -616,7 +1044,8 @@ export default function ChatPage() {
                 onClick={() =>
                   setCurrentPhraseIndex((prev) => Math.max(prev - 1, 0))
                 }
-                className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-violet-700"
+                disabled={isConnecting || isSessionActive}
+                className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-violet-700 disabled:opacity-60"
               >
                 Previous
               </button>
@@ -626,13 +1055,21 @@ export default function ChatPage() {
                     Math.min(prev + 1, idiomObjects.length - 1)
                   )
                 }
-                className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-violet-700"
+                disabled={isConnecting || isSessionActive}
+                className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-violet-700 disabled:opacity-60"
               >
                 Next
               </button>
             </div>
           </div>
         ) : null}
+
+        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <h2 className="text-base font-bold">Current AI Mode Prompt</h2>
+          <div className="mt-3 rounded-xl bg-slate-50 p-3 text-xs whitespace-pre-wrap text-slate-700">
+            {lessonPrompt}
+          </div>
+        </div>
 
         <div className="mb-4 grid grid-cols-1 gap-3">
           <button
@@ -643,37 +1080,58 @@ export default function ChatPage() {
           </button>
 
           <button
-            onClick={startPractice}
-            className="rounded-2xl bg-blue-600 px-4 py-4 text-sm font-bold text-white shadow-sm"
+            onClick={startVoice}
+            disabled={isConnecting || isSessionActive}
+            className={`rounded-2xl px-4 py-4 text-sm font-bold text-white shadow-sm ${
+              isConnecting || isSessionActive ? "bg-slate-400" : "bg-blue-600"
+            }`}
           >
-            Start Practice
+            {isConnecting
+              ? "Connecting..."
+              : isSessionActive
+              ? "Live"
+              : "Start Voice Practice"}
           </button>
 
           <button
-            onClick={addTestLine}
-            className="rounded-2xl bg-slate-800 px-4 py-4 text-sm font-bold text-white shadow-sm"
-          >
-            Add Test Speech
-          </button>
-
-          <button
-            onClick={stopPractice}
-            className="rounded-2xl bg-rose-600 px-4 py-4 text-sm font-bold text-white shadow-sm"
+            onClick={stopVoice}
+            disabled={!isConnecting && !isSessionActive}
+            className={`rounded-2xl px-4 py-4 text-sm font-bold text-white shadow-sm ${
+              !isConnecting && !isSessionActive
+                ? "bg-slate-400"
+                : "bg-rose-600"
+            }`}
           >
             Stop
           </button>
         </div>
 
+        {debugMessage ? (
+          <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+            <div className="text-sm font-bold text-rose-800">
+              Connection Error
+            </div>
+            <div className="mt-2 whitespace-pre-wrap break-words text-sm text-rose-700">
+              {debugMessage}
+            </div>
+          </div>
+        ) : null}
+
         <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <h2 className="text-base font-bold">Recent Student Speech</h2>
+          <h2 className="text-base font-bold">AI Tutor Response</h2>
           <div className="mt-3 min-h-[100px] whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
-            {userTranscript.length
-              ? userTranscript.map((line, index) => `${index + 1}. ${line}`).join("\n")
-              : "No student speech captured yet."}
+            {aiPreview || "No AI response yet."}
           </div>
         </div>
 
-        {practiceMode === "phrase" && targetPhrases.length > 0 ? (
+        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <h2 className="text-base font-bold">Recent Student Speech</h2>
+          <div className="mt-3 min-h-[120px] whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+            {transcriptPreview || "No student speech captured yet."}
+          </div>
+        </div>
+
+        {practiceMode === "phrase" && activePhraseTargets.length > 0 ? (
           <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
             <div className="flex items-center justify-between">
               <div className="text-sm font-bold">Live Phrase Tracking</div>
@@ -681,11 +1139,13 @@ export default function ChatPage() {
                 {livePhraseStats.usedCount}/{livePhraseStats.total}
               </div>
             </div>
-            <div className="mt-2 text-sm text-slate-600">{livePhraseStats.label}</div>
+            <div className="mt-2 text-sm text-slate-600">
+              {livePhraseStats.label}
+            </div>
           </div>
         ) : null}
 
-        {practiceMode === "idiom" && targetIdioms.length > 0 ? (
+        {practiceMode === "idiom" && activeIdiomTargets.length > 0 ? (
           <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
             <div className="flex items-center justify-between">
               <div className="text-sm font-bold">Live Idiom Tracking</div>
@@ -693,7 +1153,9 @@ export default function ChatPage() {
                 {liveIdiomStats.usedCount}/{liveIdiomStats.total}
               </div>
             </div>
-            <div className="mt-2 text-sm text-slate-600">{liveIdiomStats.label}</div>
+            <div className="mt-2 text-sm text-slate-600">
+              {liveIdiomStats.label}
+            </div>
           </div>
         ) : null}
 
@@ -702,7 +1164,7 @@ export default function ChatPage() {
 
           {!scoreCard ? (
             <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
-              Press Stop after adding test speech to see score.
+              Finish one voice session and press Stop to see score.
             </div>
           ) : (
             <div className="mt-4 space-y-3">
