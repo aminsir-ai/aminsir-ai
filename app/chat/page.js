@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { COURSE_DATA } from "@/lib/courseData";
+import { COURSE_DATA, getLessonWithContext } from "@/lib/courseData";
 
 function getLevels() {
   return Array.isArray(COURSE_DATA?.levels) ? COURSE_DATA.levels : [];
@@ -64,6 +64,15 @@ function clamp(num, min, max) {
 
 function round(num) {
   return Math.round(num);
+}
+
+function normalizePhraseText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[’']/g, "'")
+    .replace(/[^a-z0-9\s']/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getLessonKeywords(lesson) {
@@ -141,7 +150,13 @@ function getLessonKeywords(lesson) {
     lesson?.description || "",
     lesson?.goal || "",
     lesson?.content || "",
+    lesson?.meaning || "",
+    lesson?.example || "",
+    lesson?.speakingFocus || "",
+    lesson?.practicePrompt || "",
     Array.isArray(lesson?.keywords) ? lesson.keywords.join(" ") : "",
+    Array.isArray(lesson?.vocabulary) ? lesson.vocabulary.join(" ") : "",
+    Array.isArray(lesson?.supportWords) ? lesson.supportWords.join(" ") : "",
   ].join(" ");
 
   return uniqueWords(combined).filter(
@@ -149,7 +164,99 @@ function getLessonKeywords(lesson) {
   );
 }
 
-function buildScoreCard({ utterances, lesson, gameBonus = 0 }) {
+function getLessonTargetPhrases(lesson) {
+  if (Array.isArray(lesson?.targetPhrases)) {
+    return lesson.targetPhrases
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .slice(0, 8);
+  }
+
+  if (Array.isArray(lesson?.phrases)) {
+    return lesson.phrases
+      .map((item) => {
+        if (typeof item === "string") return item.trim();
+        if (item && typeof item === "object") return String(item.english || "").trim();
+        return "";
+      })
+      .filter(Boolean)
+      .slice(0, 8);
+  }
+
+  return [];
+}
+
+function getPhraseObjects(lesson) {
+  if (!Array.isArray(lesson?.phrases)) return [];
+
+  return lesson.phrases
+    .map((item, index) => {
+      if (typeof item === "string") {
+        return {
+          id: index + 1,
+          english: item.trim(),
+          hindi: "",
+          cue: "",
+        };
+      }
+
+      return {
+        id: item?.id || index + 1,
+        english: String(item?.english || "").trim(),
+        hindi: String(item?.hindi || "").trim(),
+        cue: String(item?.cue || "").trim(),
+      };
+    })
+    .filter((item) => item.english);
+}
+
+function getUsedTargetPhrases(utterances, targetPhrases) {
+  const transcriptText = normalizePhraseText(
+    Array.isArray(utterances) ? utterances.join(" ") : ""
+  );
+
+  if (!transcriptText) return [];
+  if (!Array.isArray(targetPhrases) || targetPhrases.length === 0) return [];
+
+  const used = [];
+
+  for (const rawPhrase of targetPhrases) {
+    const phrase = String(rawPhrase || "").trim();
+    const normalizedPhrase = normalizePhraseText(phrase);
+
+    if (!normalizedPhrase) continue;
+
+    if (transcriptText.includes(normalizedPhrase)) {
+      used.push(phrase);
+    }
+  }
+
+  return [...new Set(used)];
+}
+
+function getPhraseStats(utterances, targetPhrases) {
+  const safeTargetPhrases = Array.isArray(targetPhrases) ? targetPhrases : [];
+  const usedPhrases = getUsedTargetPhrases(utterances, safeTargetPhrases);
+  const total = safeTargetPhrases.length;
+  const usedCount = usedPhrases.length;
+  const percentage = total > 0 ? round((usedCount / total) * 100) : 0;
+
+  let label = "Needs More Phrase Practice";
+  if (percentage >= 80) label = "Excellent Phrase Use";
+  else if (percentage >= 60) label = "Very Good Phrase Use";
+  else if (percentage >= 40) label = "Good Phrase Practice";
+  else if (percentage >= 20) label = "Started Using Phrases";
+
+  return {
+    usedPhrases,
+    usedCount,
+    total,
+    percentage,
+    label,
+  };
+}
+
+function buildScoreCard({ utterances, lesson, gameBonus = 0, practiceMode = "normal" }) {
   const joinedText = utterances.join(" ").trim();
   const totalWords = cleanWords(joinedText).length;
   const turnCount = utterances.filter((u) => String(u || "").trim()).length;
@@ -162,6 +269,9 @@ function buildScoreCard({ utterances, lesson, gameBonus = 0 }) {
     lessonKeywords.length > 0
       ? matchedKeywords.length / lessonKeywords.length
       : 0;
+
+  const targetPhrases = getLessonTargetPhrases(lesson);
+  const phraseStats = getPhraseStats(utterances, targetPhrases);
 
   let participationScore = 0;
   if (turnCount >= 10) participationScore = 95;
@@ -196,17 +306,46 @@ function buildScoreCard({ utterances, lesson, gameBonus = 0 }) {
     98
   );
 
+  const phraseUsageScore =
+    phraseStats.total > 0
+      ? clamp(round(35 + phraseStats.percentage * 0.65), 20, 98)
+      : 0;
+
   const confidenceBonus =
     totalWords >= 80 && turnCount >= 6 ? 5 : totalWords >= 40 ? 3 : 0;
 
+  const phraseBonus =
+    phraseStats.total > 0
+      ? phraseStats.usedCount >= 4
+        ? 6
+        : phraseStats.usedCount >= 3
+        ? 4
+        : phraseStats.usedCount >= 2
+        ? 2
+        : phraseStats.usedCount >= 1
+        ? 1
+        : 0
+      : 0;
+
+  const practiceModeBonus = practiceMode === "phrase" && phraseStats.usedCount >= 2 ? 2 : 0;
+
+  const scoreParts = [
+    participationScore,
+    fluencyScore,
+    pronunciationScore,
+    lessonRelevanceScore,
+  ];
+
+  if (phraseStats.total > 0) {
+    scoreParts.push(phraseUsageScore);
+  }
+
   const overall = clamp(
     round(
-      (participationScore +
-        fluencyScore +
-        pronunciationScore +
-        lessonRelevanceScore) /
-        4 +
+      scoreParts.reduce((sum, value) => sum + value, 0) / scoreParts.length +
         confidenceBonus +
+        phraseBonus +
+        practiceModeBonus +
         gameBonus
     ),
     20,
@@ -233,6 +372,20 @@ function buildScoreCard({ utterances, lesson, gameBonus = 0 }) {
       "Good start. Speak a little more and try to make complete sentences.";
   }
 
+  if (phraseStats.total > 0) {
+    if (phraseStats.usedCount === 0) {
+      feedback += " Try to use the target phrases during the lesson.";
+    } else if (phraseStats.usedCount < phraseStats.total) {
+      feedback += ` Good phrase effort. You used ${phraseStats.usedCount} of ${phraseStats.total} target phrases.`;
+    } else {
+      feedback += " Excellent use of the target phrases.";
+    }
+  }
+
+  if (practiceMode === "phrase") {
+    feedback += " Phrase Practice Mode was active.";
+  }
+
   if (gameBonus > 0) {
     feedback += ` Game bonus added: +${gameBonus}.`;
   }
@@ -245,11 +398,20 @@ function buildScoreCard({ utterances, lesson, gameBonus = 0 }) {
     fluencyScore,
     pronunciationScore,
     lessonRelevanceScore,
+    phraseUsageScore,
     totalWords,
     turnCount,
     avgWordsPerTurn: round(avgWordsPerTurn),
     matchedKeywords,
     gameBonus,
+    phraseBonus,
+    practiceModeBonus,
+    targetPhrases,
+    usedPhrases: phraseStats.usedPhrases,
+    phraseUsedCount: phraseStats.usedCount,
+    phraseTotal: phraseStats.total,
+    phrasePercentage: phraseStats.percentage,
+    phraseLabel: phraseStats.label,
   };
 }
 
@@ -315,6 +477,9 @@ export default function ChatPage() {
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDay, setSelectedDay] = useState(1);
 
+  const [practiceMode, setPracticeMode] = useState("normal");
+  const [currentPhraseIndex, setCurrentPhraseIndex] = useState(0);
+
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [statusText, setStatusText] = useState("Ready");
   const [isConnecting, setIsConnecting] = useState(false);
@@ -343,6 +508,7 @@ export default function ChatPage() {
   const latestUserTranscriptRef = useRef([]);
   const latestGameSecondsLeftRef = useRef(60);
   const latestGameModeEnabledRef = useRef(false);
+  const latestPracticeModeRef = useRef("normal");
 
   const GAME_DURATION = 60;
   const GAME_TARGET_TURNS = 5;
@@ -354,10 +520,24 @@ export default function ChatPage() {
     [selectedLevel, selectedWeek]
   );
 
-  const lesson = useMemo(
-    () => getDay(selectedLevel, selectedWeek, selectedDay),
-    [selectedLevel, selectedWeek, selectedDay]
-  );
+  const lesson = useMemo(() => {
+    return (
+      getLessonWithContext(selectedLevel, selectedWeek, selectedDay) ||
+      getDay(selectedLevel, selectedWeek, selectedDay)
+    );
+  }, [selectedLevel, selectedWeek, selectedDay]);
+
+  const phraseObjects = useMemo(() => getPhraseObjects(lesson), [lesson]);
+  const targetPhrases = useMemo(() => getLessonTargetPhrases(lesson), [lesson]);
+
+  const currentPhrase = useMemo(() => {
+    if (!phraseObjects.length) return null;
+    return phraseObjects[currentPhraseIndex] || phraseObjects[0] || null;
+  }, [phraseObjects, currentPhraseIndex]);
+
+  const livePhraseStats = useMemo(() => {
+    return getPhraseStats(userTranscript, targetPhrases);
+  }, [userTranscript, targetPhrases]);
 
   const averageHistoryScore = useMemo(() => {
     if (!sessionHistory.length) return 0;
@@ -379,6 +559,14 @@ export default function ChatPage() {
   useEffect(() => {
     latestGameModeEnabledRef.current = gameModeEnabled;
   }, [gameModeEnabled]);
+
+  useEffect(() => {
+    latestPracticeModeRef.current = practiceMode;
+  }, [practiceMode]);
+
+  useEffect(() => {
+    setCurrentPhraseIndex(0);
+  }, [selectedLevel, selectedWeek, selectedDay, practiceMode]);
 
   useEffect(() => {
     try {
@@ -469,6 +657,12 @@ export default function ChatPage() {
     }
   }, [selectedLevel, selectedWeek, selectedDay]);
 
+  useEffect(() => {
+    if (currentPhraseIndex > phraseObjects.length - 1) {
+      setCurrentPhraseIndex(0);
+    }
+  }, [currentPhraseIndex, phraseObjects.length]);
+
   const safeLessonTitle =
     lesson?.title ||
     lesson?.topic ||
@@ -479,6 +673,37 @@ export default function ChatPage() {
   }, [userTranscript]);
 
   const lessonPrompt = useMemo(() => {
+    const phraseInstructions =
+      targetPhrases.length > 0
+        ? `
+Target Phrase Practice:
+- Today's target phrases are:
+${targetPhrases.map((phrase, index) => `  ${index + 1}. ${phrase}`).join("\n")}
+- Encourage the student to use these phrases naturally.
+- Introduce only 1 or 2 target phrases at a time.
+- Do not read the full phrase list repeatedly.
+- Ask short questions that make the student use the target phrases.
+- Praise the student when a target phrase is used correctly.
+- If the student is not using them, gently remind the student to try one target phrase in the answer.
+`
+        : "";
+
+    const phraseModeInstructions =
+      practiceMode === "phrase" && phraseObjects.length > 0
+        ? `
+Phrase Practice Mode is ON.
+- This is not a general lesson chat.
+- Focus on phrase-by-phrase speaking practice.
+- Start with the current phrase first: "${currentPhrase?.english || ""}"
+- Ask the student to repeat or use the phrase in a short sentence.
+- Keep replies short.
+- Let the student speak more than you.
+- Correct gently.
+- Move naturally to the next phrase after successful use.
+- Use Hindi support only if truly needed, but keep the main session in easy English.
+`
+        : "";
+
     const gameInstructions = gameModeEnabled
       ? `
 Game Mode is ON.
@@ -498,10 +723,12 @@ Student lesson details:
 - Week: ${selectedWeek}
 - Day: ${selectedDay}
 - Lesson title: ${lesson?.title || ""}
-- Lesson topic: ${lesson?.topic || ""}
-- Lesson description: ${lesson?.description || ""}
-- Lesson goal: ${lesson?.goal || ""}
-- Lesson content: ${lesson?.content || ""}
+- Lesson meaning: ${lesson?.meaning || ""}
+- Lesson example: ${lesson?.example || ""}
+- Lesson speaking focus: ${lesson?.speakingFocus || ""}
+- Lesson practice prompt: ${lesson?.practicePrompt || ""}
+- Lesson type: ${lesson?.lessonType || ""}
+- Practice mode: ${practiceMode}
 
 Teaching style:
 - Speak in simple, clear English
@@ -515,6 +742,10 @@ Teaching style:
 - Motivate the student
 - Focus on today's lesson only
 
+${phraseInstructions}
+
+${phraseModeInstructions}
+
 ${gameInstructions}
 
 Start by greeting the student and introducing today's lesson.
@@ -525,6 +756,10 @@ Start by greeting the student and introducing today's lesson.
     selectedDay,
     lesson,
     gameModeEnabled,
+    targetPhrases,
+    practiceMode,
+    phraseObjects,
+    currentPhrase,
   ]);
 
   const clearGameTimer = useCallback(() => {
@@ -647,7 +882,7 @@ Start by greeting the student and introducing today's lesson.
   }, []);
 
   const addSessionHistory = useCallback(
-    ({ score, gameBonus, mode }) => {
+    ({ score, gameBonus, mode, phraseUsedCount = 0, phraseTotal = 0 }) => {
       const today = getTodayKey();
 
       const entry = {
@@ -660,6 +895,8 @@ Start by greeting the student and introducing today's lesson.
         level: selectedLevel,
         week: selectedWeek,
         day: selectedDay,
+        phraseUsedCount: Number(phraseUsedCount || 0),
+        phraseTotal: Number(phraseTotal || 0),
       };
 
       setSessionHistory((prev) => {
@@ -698,6 +935,7 @@ Start by greeting the student and introducing today's lesson.
       utterances: latestUtterances,
       lesson,
       gameBonus,
+      practiceMode: latestPracticeModeRef.current,
     });
 
     setScoreCard(result);
@@ -706,13 +944,18 @@ Start by greeting the student and introducing today's lesson.
     addSessionHistory({
       score: result.overall,
       gameBonus,
-      mode: latestGameModeEnabledRef.current ? "Game" : "Normal",
+      mode:
+        latestGameModeEnabledRef.current
+          ? latestPracticeModeRef.current === "phrase"
+            ? "Game + Phrase"
+            : "Game"
+          : latestPracticeModeRef.current === "phrase"
+          ? "Phrase"
+          : "Normal",
+      phraseUsedCount: result.phraseUsedCount,
+      phraseTotal: result.phraseTotal,
     });
-  }, [
-    lesson,
-    updatePracticeStats,
-    addSessionHistory,
-  ]);
+  }, [lesson, updatePracticeStats, addSessionHistory]);
 
   useEffect(() => {
     if (!gameModeEnabled || !isSessionActive) return;
@@ -897,14 +1140,19 @@ Start by greeting the student and introducing today's lesson.
           })
         );
 
+        const openingInstruction =
+          practiceMode === "phrase"
+            ? `Greet the student warmly and begin Phrase Practice Mode for today's lesson: ${safeLessonTitle}. Start with this phrase: "${currentPhrase?.english || ""}". Ask the student to repeat it or use it in a sentence. Keep the coaching short and supportive.`
+            : gameModeEnabled
+            ? `Game Mode is ON. Greet the student warmly and start a fast speaking challenge for today's lesson: ${safeLessonTitle}. Encourage target phrase use naturally if target phrases exist.`
+            : `Greet the student warmly and begin today's lesson: ${safeLessonTitle}. Encourage target phrase use naturally if target phrases exist.`;
+
         dc.send(
           JSON.stringify({
             type: "response.create",
             response: {
               modalities: ["audio", "text"],
-              instructions: gameModeEnabled
-                ? `Game Mode is ON. Greet the student warmly and start a fast speaking challenge for today's lesson: ${safeLessonTitle}.`
-                : `Greet the student warmly and begin today's lesson: ${safeLessonTitle}.`,
+              instructions: openingInstruction,
             },
           })
         );
@@ -956,7 +1204,15 @@ Start by greeting the student and introducing today's lesson.
         setGameSecondsLeft(GAME_DURATION);
         latestGameSecondsLeftRef.current = GAME_DURATION;
       }
-      setStatusText(gameModeEnabled ? "Game live" : "Lesson live");
+      setStatusText(
+        practiceMode === "phrase"
+          ? gameModeEnabled
+            ? "Phrase game live"
+            : "Phrase practice live"
+          : gameModeEnabled
+          ? "Game live"
+          : "Lesson live"
+      );
     } catch (error) {
       console.error("Start voice error:", error);
       setDebugMessage(error?.message || "Unknown start voice error");
@@ -981,6 +1237,22 @@ Start by greeting the student and introducing today's lesson.
       .map((item, index) => `${index + 1}. ${item}`)
       .join("\n");
   }, [userTranscript]);
+
+  const goToNextPhrase = () => {
+    if (!phraseObjects.length) return;
+    setCurrentPhraseIndex((prev) => {
+      if (prev >= phraseObjects.length - 1) return prev;
+      return prev + 1;
+    });
+  };
+
+  const goToPrevPhrase = () => {
+    if (!phraseObjects.length) return;
+    setCurrentPhraseIndex((prev) => {
+      if (prev <= 0) return 0;
+      return prev - 1;
+    });
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -1160,15 +1432,63 @@ Start by greeting the student and introducing today's lesson.
           </div>
         </div>
 
+        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold">Practice Mode</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Choose normal lesson or phrase-by-phrase practice
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setPracticeMode("normal")}
+              disabled={isSessionActive || isConnecting}
+              className={`rounded-2xl px-4 py-3 text-sm font-bold shadow-sm ${
+                practiceMode === "normal"
+                  ? "bg-blue-600 text-white"
+                  : "bg-slate-100 text-slate-700 ring-1 ring-slate-200"
+              } ${isSessionActive || isConnecting ? "opacity-60" : "active:scale-[0.99]"}`}
+            >
+              Normal Lesson
+            </button>
+
+            <button
+              onClick={() => setPracticeMode("phrase")}
+              disabled={isSessionActive || isConnecting || phraseObjects.length === 0}
+              className={`rounded-2xl px-4 py-3 text-sm font-bold shadow-sm ${
+                practiceMode === "phrase"
+                  ? "bg-amber-500 text-white"
+                  : "bg-slate-100 text-slate-700 ring-1 ring-slate-200"
+              } ${
+                isSessionActive || isConnecting || phraseObjects.length === 0
+                  ? "opacity-60"
+                  : "active:scale-[0.99]"
+              }`}
+            >
+              Phrase Practice
+            </button>
+          </div>
+
+          <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-700">
+            Current Mode:{" "}
+            <span className="font-semibold">
+              {practiceMode === "phrase" ? "Phrase Practice" : "Normal Lesson"}
+            </span>
+          </div>
+        </div>
+
         <div className="mb-4 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 p-4 text-white shadow-sm">
           <div className="text-xs font-semibold uppercase tracking-wide opacity-90">
             Lesson of the Day
           </div>
           <div className="mt-2 text-lg font-bold">{safeLessonTitle}</div>
 
-          {lesson?.description ? (
+          {lesson?.meaning ? (
             <p className="mt-2 text-sm leading-6 text-blue-50">
-              {lesson.description}
+              {lesson.meaning}
             </p>
           ) : null}
 
@@ -1183,7 +1503,108 @@ Start by greeting the student and introducing today's lesson.
               Day {selectedDay}
             </span>
           </div>
+
+          {targetPhrases.length > 0 ? (
+            <div className="mt-4 rounded-2xl bg-white/10 p-3">
+              <div className="text-sm font-bold">Target Phrases</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {targetPhrases.map((phrase) => {
+                  const isUsed = livePhraseStats.usedPhrases.includes(phrase);
+                  return (
+                    <span
+                      key={phrase}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                        isUsed
+                          ? "bg-emerald-300 text-emerald-950"
+                          : "bg-white/15 text-white"
+                      }`}
+                    >
+                      {phrase}
+                    </span>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 text-xs text-blue-50">
+                Use these phrases naturally while speaking.
+              </div>
+            </div>
+          ) : null}
         </div>
+
+        {practiceMode === "phrase" && currentPhrase ? (
+          <div className="mb-4 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 p-4 text-white shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold">Phrase Practice</div>
+                <div className="mt-1 text-xs text-amber-100">
+                  Phrase {currentPhraseIndex + 1} of {phraseObjects.length}
+                </div>
+              </div>
+
+              <div className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold">
+                Active
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl bg-white/10 p-4">
+              <div className="text-xs uppercase tracking-wide text-amber-100">
+                English Phrase
+              </div>
+              <div className="mt-2 text-lg font-bold leading-7">
+                {currentPhrase.english}
+              </div>
+
+              {currentPhrase.hindi ? (
+                <>
+                  <div className="mt-4 text-xs uppercase tracking-wide text-amber-100">
+                    Hindi Help
+                  </div>
+                  <div className="mt-2 text-sm leading-6 text-white/95">
+                    {currentPhrase.hindi}
+                  </div>
+                </>
+              ) : null}
+
+              {currentPhrase.cue ? (
+                <>
+                  <div className="mt-4 text-xs uppercase tracking-wide text-amber-100">
+                    Practice Cue
+                  </div>
+                  <div className="mt-2 text-sm leading-6 text-white/95">
+                    {currentPhrase.cue}
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <div className="mt-3 flex gap-3">
+              <button
+                onClick={goToPrevPhrase}
+                disabled={currentPhraseIndex === 0}
+                className={`flex-1 rounded-2xl px-4 py-3 text-sm font-bold ${
+                  currentPhraseIndex === 0
+                    ? "bg-white/10 text-white/60"
+                    : "bg-white text-amber-700"
+                }`}
+              >
+                Previous
+              </button>
+
+              <button
+                onClick={goToNextPhrase}
+                disabled={currentPhraseIndex >= phraseObjects.length - 1}
+                className={`flex-1 rounded-2xl px-4 py-3 text-sm font-bold ${
+                  currentPhraseIndex >= phraseObjects.length - 1
+                    ? "bg-white/10 text-white/60"
+                    : "bg-white text-amber-700"
+                }`}
+              >
+                Next Phrase
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         <div className="mb-4 grid grid-cols-1 gap-3">
           <button
@@ -1202,6 +1623,10 @@ Start by greeting the student and introducing today's lesson.
           >
             {isConnecting
               ? "Connecting..."
+              : practiceMode === "phrase" && gameModeEnabled
+              ? "Start Phrase Game Voice"
+              : practiceMode === "phrase"
+              ? "Start Phrase Voice"
               : gameModeEnabled
               ? "Start Game Voice"
               : "Start Voice"}
@@ -1295,8 +1720,10 @@ Start by greeting the student and introducing today's lesson.
                         </span>
                         <span
                           className={`rounded-full px-2.5 py-1 font-medium ${
-                            item.mode === "Game"
+                            item.mode === "Game" || item.mode === "Game + Phrase"
                               ? "bg-violet-100 text-violet-700"
+                              : item.mode === "Phrase"
+                              ? "bg-amber-100 text-amber-700"
                               : "bg-blue-100 text-blue-700"
                           }`}
                         >
@@ -1305,6 +1732,11 @@ Start by greeting the student and introducing today's lesson.
                         {Number(item.gameBonus || 0) > 0 ? (
                           <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-700">
                             Bonus +{item.gameBonus}
+                          </span>
+                        ) : null}
+                        {Number(item.phraseTotal || 0) > 0 ? (
+                          <span className="rounded-full bg-amber-100 px-2.5 py-1 font-medium text-amber-700">
+                            Phrases {item.phraseUsedCount}/{item.phraseTotal}
                           </span>
                         ) : null}
                       </div>
@@ -1329,7 +1761,7 @@ Start by greeting the student and introducing today's lesson.
 
           {!scoreCard ? (
             <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
-              Finish one speaking session to see score, feedback, and lesson relevance.
+              Finish one speaking session to see score, feedback, lesson relevance.
             </div>
           ) : (
             <div className="mt-4 space-y-3">
@@ -1344,6 +1776,16 @@ Start by greeting the student and introducing today's lesson.
                 {scoreCard.gameBonus > 0 ? (
                   <div className="mt-2 text-sm text-emerald-300">
                     Game Bonus Applied: +{scoreCard.gameBonus}
+                  </div>
+                ) : null}
+                {scoreCard.phraseBonus > 0 ? (
+                  <div className="mt-2 text-sm text-amber-300">
+                    Phrase Bonus Applied: +{scoreCard.phraseBonus}
+                  </div>
+                ) : null}
+                {scoreCard.practiceModeBonus > 0 ? (
+                  <div className="mt-2 text-sm text-blue-300">
+                    Phrase Practice Bonus Applied: +{scoreCard.practiceModeBonus}
                   </div>
                 ) : null}
               </div>
@@ -1377,6 +1819,76 @@ Start by greeting the student and introducing today's lesson.
                   </div>
                 </div>
               </div>
+
+              {scoreCard.phraseTotal > 0 ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-xl bg-amber-50 p-3">
+                      <div className="text-xs text-amber-700">Phrase Score</div>
+                      <div className="mt-1 text-lg font-bold text-amber-900">
+                        {scoreCard.phraseUsageScore}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl bg-amber-50 p-3">
+                      <div className="text-xs text-amber-700">Phrases Used</div>
+                      <div className="mt-1 text-lg font-bold text-amber-900">
+                        {scoreCard.phraseUsedCount}/{scoreCard.phraseTotal}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                    <div className="text-sm font-semibold text-amber-900">
+                      {scoreCard.phraseLabel}
+                    </div>
+                    <div className="mt-1 text-sm text-amber-800">
+                      Coverage: {scoreCard.phrasePercentage}%
+                    </div>
+
+                    <div className="mt-3">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                        Target Phrases
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {scoreCard.targetPhrases.map((phrase) => {
+                          const used = scoreCard.usedPhrases.includes(phrase);
+                          return (
+                            <span
+                              key={phrase}
+                              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                                used
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-white text-slate-700 ring-1 ring-amber-200"
+                              }`}
+                            >
+                              {phrase}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {scoreCard.usedPhrases.length > 0 ? (
+                      <div className="mt-3">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                          Phrases You Used
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {scoreCard.usedPhrases.map((phrase) => (
+                            <span
+                              key={phrase}
+                              className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800"
+                            >
+                              {phrase}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
 
               <div className="rounded-xl border border-slate-200 p-3">
                 <div className="text-sm font-semibold">Session Details</div>
@@ -1433,6 +1945,32 @@ Start by greeting the student and introducing today's lesson.
           <p className="mt-1 text-sm text-slate-600">
             Last captured speaking lines
           </p>
+
+          {targetPhrases.length > 0 ? (
+            <div className="mt-3 rounded-xl bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">
+                    Live Phrase Tracking
+                  </div>
+                  <div className="mt-1 text-xs text-slate-600">
+                    {livePhraseStats.label}
+                  </div>
+                </div>
+
+                <div className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">
+                  {livePhraseStats.usedCount}/{livePhraseStats.total}
+                </div>
+              </div>
+
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
+                <div
+                  className="h-full rounded-full bg-amber-500 transition-all"
+                  style={{ width: `${livePhraseStats.percentage}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-3 min-h-[100px] whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
             {transcriptPreview || "No student speech captured yet."}
