@@ -430,6 +430,19 @@ export default function ChatPage() {
     lesson?.title ||
     `Level ${selectedLevel} Week ${selectedWeek} Day ${selectedDay}`;
 
+  const currentVerbLine =
+    lesson?.lessonType === "verb_tense" &&
+    Array.isArray(lesson?.tenseLines) &&
+    lesson.tenseLines.length > 0
+      ? lesson.tenseLines[0]
+      : "";
+
+  const totalVerbLines =
+    lesson?.lessonType === "verb_tense" &&
+    Array.isArray(lesson?.tenseLines)
+      ? lesson.tenseLines.length
+      : 0;
+
   const lessonPrompt = useMemo(() => {
     const phraseText =
       practiceMode === "phrase" && currentPhrase?.english
@@ -1066,6 +1079,43 @@ Start by greeting the student and beginning today's lesson.
           </div>
         </div>
 
+        {lesson?.lessonType === "verb_tense" ? (
+          <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Verb Practice
+            </div>
+
+            <div className="mt-3 grid gap-3">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Verb
+                </div>
+                <div className="mt-1 text-lg font-bold uppercase text-slate-900">
+                  {lesson?.verb || lesson?.word || ""}
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-slate-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Meaning
+                </div>
+                <div className="mt-1 text-base font-semibold text-slate-900">
+                  {lesson?.verbMeaning || lesson?.meaning || ""}
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-100">
+                <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                  Sentence 1 / {totalVerbLines || 12}
+                </div>
+                <div className="mt-2 text-lg font-bold text-amber-900">
+                  {currentVerbLine}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {practiceMode === "phrase" && currentPhrase?.english ? (
           <div className="mb-4 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 p-4 text-white shadow-sm">
             <div className="text-sm font-bold">Phrase Practice</div>
@@ -1317,5 +1367,3 @@ Start by greeting the student and beginning today's lesson.
     </div>
   );
 }
-
-
