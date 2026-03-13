@@ -4,14 +4,15 @@ import { useState } from "react";
 
 export default function AdminPage() {
   const [name, setName] = useState("");
-  const [pin, setPin] = useState("");
+  const [loginId, setLoginId] = useState("");
+  const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
 
   async function addStudent() {
     setMessage("");
 
-    if (!name || !pin) {
-      setMessage("Please enter both name and PIN");
+    if (!name || !loginId || !password) {
+      setMessage("Please enter name, login ID and password");
       return;
     }
 
@@ -20,7 +21,7 @@ export default function AdminPage() {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ name, pin }),
+      body: JSON.stringify({ name, loginId, password }),
     });
 
     const data = await res.json();
@@ -28,7 +29,8 @@ export default function AdminPage() {
     if (res.ok) {
       setMessage("Student added successfully!");
       setName("");
-      setPin("");
+      setLoginId("");
+      setPassword("");
     } else {
       setMessage(data.error || "Error adding student");
     }
@@ -47,9 +49,17 @@ export default function AdminPage() {
       />
 
       <input
-        placeholder="PIN"
-        value={pin}
-        onChange={(e) => setPin(e.target.value)}
+        placeholder="Login ID"
+        value={loginId}
+        onChange={(e) => setLoginId(e.target.value)}
+        style={{ display: "block", marginBottom: 10, padding: 8 }}
+      />
+
+      <input
+        type="password"
+        placeholder="Password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
         style={{ display: "block", marginBottom: 10, padding: 8 }}
       />
 
