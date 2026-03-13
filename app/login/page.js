@@ -5,29 +5,50 @@ import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [pin, setPin] = useState("");
+  const [loginId, setLoginId] = useState("");
+  const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const onLogin = (e) => {
+  async function onLogin(e) {
     e.preventDefault();
     setErr("");
+    setLoading(true);
 
-    // ✅ Your demo users (you can expand later)
-    const u = name.trim().toLowerCase();
-    const p = pin.trim();
+    try {
+      const res = await fetch("/api/student-login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ loginId, password }),
+      });
 
-    if (u === "ali" && p === "2222") {
+      const data = await res.json();
+
+      if (!res.ok || !data?.success) {
+        setErr(data?.error || "Login failed");
+        setLoading(false);
+        return;
+      }
+
       localStorage.setItem(
         "aminsir_user",
-        JSON.stringify({ name: "Ali", pin: "2222" })
+        JSON.stringify({
+          id: data.student.id,
+          name: data.student.name,
+          loginId: data.student.loginId,
+          loginTime: Date.now(),
+        })
       );
-      router.push("/chat");
-      return;
-    }
 
-    setErr("Invalid user or PIN");
-  };
+      router.push("/chat");
+    } catch (error) {
+      setErr("Unable to login right now");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
@@ -35,22 +56,23 @@ export default function LoginPage() {
 
       <form onSubmit={onLogin} style={{ display: "grid", gap: 12, maxWidth: 340 }}>
         <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="User (example: Ali)"
+          value={loginId}
+          onChange={(e) => setLoginId(e.target.value)}
+          placeholder="Login ID"
           style={{ padding: 12, borderRadius: 10, border: "1px solid #ddd" }}
         />
 
         <input
-          value={pin}
-          onChange={(e) => setPin(e.target.value)}
-          placeholder="PIN (example: 2222)"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
           type="password"
           style={{ padding: 12, borderRadius: 10, border: "1px solid #ddd" }}
         />
 
         <button
           type="submit"
+          disabled={loading}
           style={{
             padding: 12,
             borderRadius: 12,
@@ -59,9 +81,10 @@ export default function LoginPage() {
             color: "white",
             fontWeight: 800,
             cursor: "pointer",
+            opacity: loading ? 0.7 : 1,
           }}
         >
-          Login
+          {loading ? "Logging in..." : "Login"}
         </button>
 
         {err ? (

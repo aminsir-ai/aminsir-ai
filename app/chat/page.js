@@ -252,6 +252,8 @@ function buildScoreCard({
 export default function ChatPage() {
   const router = useRouter();
 
+  const [authChecked, setAuthChecked] = useState(false);
+
   const [selectedLevel, setSelectedLevel] = useState(1);
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDay, setSelectedDay] = useState(1);
@@ -268,12 +270,15 @@ export default function ChatPage() {
   const [userTranscript, setUserTranscript] = useState([]);
   const [scoreCard, setScoreCard] = useState(null);
   const [debugMessage, setDebugMessage] = useState("");
+  const [sessionSecondsLeft, setSessionSecondsLeft] = useState(15 * 60);
 
   const peerConnectionRef = useRef(null);
   const dataChannelRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const audioContextRef = useRef(null);
+  const sessionTimeoutRef = useRef(null);
+  const sessionStartedAtRef = useRef(null);
 
   const latestUserTranscriptRef = useRef([]);
 
@@ -336,6 +341,34 @@ export default function ChatPage() {
   }, [userTranscript]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const raw = localStorage.getItem("aminsir_user");
+
+    if (!raw) {
+      router.replace("/login");
+      return;
+    }
+
+    try {
+      const session = JSON.parse(raw);
+
+      if (!session?.id) {
+        localStorage.removeItem("aminsir_user");
+        router.replace("/login");
+        return;
+      }
+
+      setAuthChecked(true);
+    } catch {
+      localStorage.removeItem("aminsir_user");
+      router.replace("/login");
+    }
+  }, [router]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+
     try {
       const saved = JSON.parse(
         localStorage.getItem("aminsir_mobile_lesson_selection") || "{}"
@@ -354,9 +387,11 @@ export default function ChatPage() {
       setSelectedWeek(1);
       setSelectedDay(1);
     }
-  }, []);
+  }, [authChecked]);
 
   useEffect(() => {
+    if (!authChecked) return;
+
     localStorage.setItem(
       "aminsir_mobile_lesson_selection",
       JSON.stringify({
@@ -365,7 +400,7 @@ export default function ChatPage() {
         day: selectedDay,
       })
     );
-  }, [selectedLevel, selectedWeek, selectedDay]);
+  }, [authChecked, selectedLevel, selectedWeek, selectedDay]);
 
   useEffect(() => {
     setCurrentPhraseIndex(0);
@@ -375,6 +410,21 @@ export default function ChatPage() {
     setDebugMessage("");
     setStatusText("Ready");
   }, [selectedLevel, selectedWeek, selectedDay, practiceMode]);
+
+  useEffect(() => {
+    if (!isSessionActive || !sessionStartedAtRef.current) {
+      setSessionSecondsLeft(15 * 60);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - sessionStartedAtRef.current) / 1000);
+      const remaining = Math.max(0, 15 * 60 - elapsed);
+      setSessionSecondsLeft(remaining);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isSessionActive]);
 
   const safeLessonTitle =
     lesson?.title ||
@@ -496,7 +546,6 @@ Start by greeting the student and beginning today's lesson.
     selectedDay,
     lesson,
   ]);
-
   const unlockAudio = async () => {
     try {
       if (!audioContextRef.current) {
@@ -587,6 +636,14 @@ Start by greeting the student and beginning today's lesson.
 
   const closeSession = useCallback(async () => {
     try {
+      if (sessionTimeoutRef.current) {
+        clearTimeout(sessionTimeoutRef.current);
+        sessionTimeoutRef.current = null;
+      }
+
+      sessionStartedAtRef.current = null;
+      setSessionSecondsLeft(15 * 60);
+
       if (dataChannelRef.current) {
         try {
           dataChannelRef.current.close();
@@ -799,7 +856,16 @@ Start by greeting the student and beginning today's lesson.
         sdp: sdpText,
       });
 
+      sessionStartedAtRef.current = Date.now();
+      setSessionSecondsLeft(15 * 60);
       setIsSessionActive(true);
+
+      sessionTimeoutRef.current = setTimeout(async () => {
+        await closeSession();
+        finalizeScore();
+        setStatusText("15-minute limit reached");
+        setDebugMessage("Session stopped automatically after 15 minutes.");
+      }, 15 * 60 * 1000);
     } catch (error) {
       console.error("Start voice error:", error);
       setDebugMessage(error?.message || "Unknown start voice error");
@@ -831,6 +897,10 @@ Start by greeting the student and beginning today's lesson.
       .join("\n\n");
   }, [aiTranscript]);
 
+  if (!authChecked) {
+    return <div className="min-h-screen bg-slate-50" />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto w-full max-w-md px-4 pb-24 pt-4">
@@ -842,8 +912,21 @@ Start by greeting the student and beginning today's lesson.
             Back
           </button>
 
-          <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
-            {statusText}
+          <div className="flex items-center gap-2">
+            <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
+              {statusText}
+            </div>
+
+            <button
+              onClick={async () => {
+                await closeSession();
+                localStorage.removeItem("aminsir_user");
+                router.push("/login");
+              }}
+              className="rounded-xl bg-rose-600 px-3 py-2 text-xs font-bold text-white shadow-sm"
+            >
+              Logout
+            </button>
           </div>
         </div>
 
@@ -852,6 +935,11 @@ Start by greeting the student and beginning today's lesson.
           <p className="mt-1 text-sm text-slate-600">
             Live lesson, phrase and idiom speaking practice
           </p>
+
+          <div className="mt-3 text-xs font-semibold text-slate-500">
+            Session Limit: {String(Math.floor(sessionSecondsLeft / 60)).padStart(2, "0")}:
+            {String(sessionSecondsLeft % 60).padStart(2, "0")}
+          </div>
         </div>
 
         <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -954,7 +1042,6 @@ Start by greeting the student and beginning today's lesson.
             </button>
           </div>
         </div>
-
         <div className="mb-4 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 p-4 text-white shadow-sm">
           <div className="text-xs font-semibold uppercase tracking-wide opacity-90">
             Current Lesson
