@@ -260,6 +260,7 @@ export default function ChatPage() {
 
   const [practiceMode, setPracticeMode] = useState("normal");
   const [currentPhraseIndex, setCurrentPhraseIndex] = useState(0);
+  const [currentVerbIndex, setCurrentVerbIndex] = useState(0);
 
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [statusText, setStatusText] = useState("Ready");
@@ -404,6 +405,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     setCurrentPhraseIndex(0);
+    setCurrentVerbIndex(0);
     setUserTranscript([]);
     setAiTranscript([]);
     setScoreCard(null);
@@ -434,7 +436,7 @@ export default function ChatPage() {
     lesson?.lessonType === "verb_tense" &&
     Array.isArray(lesson?.tenseLines) &&
     lesson.tenseLines.length > 0
-      ? lesson.tenseLines[0]
+      ? lesson.tenseLines[currentVerbIndex]
       : "";
 
   const totalVerbLines =
@@ -1106,11 +1108,44 @@ Start by greeting the student and beginning today's lesson.
 
               <div className="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-100">
                 <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">
-                  Sentence 1 / {totalVerbLines || 12}
+                  Sentence {currentVerbIndex + 1} / {totalVerbLines || 12}
                 </div>
                 <div className="mt-2 text-lg font-bold text-amber-900">
                   {currentVerbLine}
                 </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() =>
+                    setCurrentVerbIndex((prev) => Math.max(prev - 1, 0))
+                  }
+                  disabled={
+                    isConnecting || isSessionActive || currentVerbIndex === 0
+                  }
+                  className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-amber-700 ring-1 ring-amber-200 disabled:opacity-60"
+                >
+                  Previous
+                </button>
+
+                <button
+                  onClick={() =>
+                    setCurrentVerbIndex((prev) =>
+                      Math.min(
+                        prev + 1,
+                        Math.max((lesson?.tenseLines?.length || 1) - 1, 0)
+                      )
+                    )
+                  }
+                  disabled={
+                    isConnecting ||
+                    isSessionActive ||
+                    currentVerbIndex >= (lesson?.tenseLines?.length || 1) - 1
+                  }
+                  className="flex-1 rounded-2xl bg-white px-4 py-3 text-sm font-bold text-amber-700 ring-1 ring-amber-200 disabled:opacity-60"
+                >
+                  Next
+                </button>
               </div>
             </div>
           </div>
