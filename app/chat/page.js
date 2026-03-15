@@ -252,8 +252,6 @@ function buildScoreCard({
 export default function ChatPage() {
   const router = useRouter();
 
-  const [authChecked, setAuthChecked] = useState(false);
-
   const [selectedLevel, setSelectedLevel] = useState(1);
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDay, setSelectedDay] = useState(1);
@@ -270,15 +268,12 @@ export default function ChatPage() {
   const [userTranscript, setUserTranscript] = useState([]);
   const [scoreCard, setScoreCard] = useState(null);
   const [debugMessage, setDebugMessage] = useState("");
-  const [sessionSecondsLeft, setSessionSecondsLeft] = useState(15 * 60);
 
   const peerConnectionRef = useRef(null);
   const dataChannelRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const audioContextRef = useRef(null);
-  const sessionTimeoutRef = useRef(null);
-  const sessionStartedAtRef = useRef(null);
 
   const latestUserTranscriptRef = useRef([]);
 
@@ -341,34 +336,6 @@ export default function ChatPage() {
   }, [userTranscript]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const raw = localStorage.getItem("aminsir_user");
-
-    if (!raw) {
-      router.replace("/login");
-      return;
-    }
-
-    try {
-      const session = JSON.parse(raw);
-
-      if (!session?.id) {
-        localStorage.removeItem("aminsir_user");
-        router.replace("/login");
-        return;
-      }
-
-      setAuthChecked(true);
-    } catch {
-      localStorage.removeItem("aminsir_user");
-      router.replace("/login");
-    }
-  }, [router]);
-
-  useEffect(() => {
-    if (!authChecked) return;
-
     try {
       const saved = JSON.parse(
         localStorage.getItem("aminsir_mobile_lesson_selection") || "{}"
@@ -387,11 +354,9 @@ export default function ChatPage() {
       setSelectedWeek(1);
       setSelectedDay(1);
     }
-  }, [authChecked]);
+  }, []);
 
   useEffect(() => {
-    if (!authChecked) return;
-
     localStorage.setItem(
       "aminsir_mobile_lesson_selection",
       JSON.stringify({
@@ -400,7 +365,7 @@ export default function ChatPage() {
         day: selectedDay,
       })
     );
-  }, [authChecked, selectedLevel, selectedWeek, selectedDay]);
+  }, [selectedLevel, selectedWeek, selectedDay]);
 
   useEffect(() => {
     setCurrentPhraseIndex(0);
@@ -411,37 +376,9 @@ export default function ChatPage() {
     setStatusText("Ready");
   }, [selectedLevel, selectedWeek, selectedDay, practiceMode]);
 
-  useEffect(() => {
-    if (!isSessionActive || !sessionStartedAtRef.current) {
-      setSessionSecondsLeft(15 * 60);
-      return;
-    }
-
-    const interval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - sessionStartedAtRef.current) / 1000);
-      const remaining = Math.max(0, 15 * 60 - elapsed);
-      setSessionSecondsLeft(remaining);
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isSessionActive]);
-
   const safeLessonTitle =
     lesson?.title ||
     `Level ${selectedLevel} Week ${selectedWeek} Day ${selectedDay}`;
-
-  const currentVerbLine =
-    lesson?.lessonType === "verb_tense" &&
-    Array.isArray(lesson?.tenseLines) &&
-    lesson.tenseLines.length > 0
-      ? lesson.tenseLines[0]
-      : "";
-
-  const totalVerbLines =
-    lesson?.lessonType === "verb_tense" &&
-    Array.isArray(lesson?.tenseLines)
-      ? lesson.tenseLines.length
-      : 0;
 
   const lessonPrompt = useMemo(() => {
     const phraseText =
@@ -482,20 +419,16 @@ Phrase cue: ${phraseCue || "Help the student use this phrase naturally."}
 
 Instructions:
 - Speak in very simple English
-- Speak only 1 very short sentence at a time
+- Keep sentences short
 - First say the phrase clearly
 - Ask the student to repeat the phrase
-- Then ask the student to make their own sentence
-- After asking, stop and wait for the student
-- Keep your talking to about 20 percent
-- Let the student speak about 80 percent
-- If the student speaks correctly, reply with only short praise like:
-"Excellent", "Very good", "Good", or "Nice"
-- Do not give long praise
-- If the student makes a mistake, give only a short correction
-- After correction, ask the student to repeat correctly
+- Then ask the student to make one short sentence using the phrase
+- Encourage the student kindly
+- Correct gently
 - Do not switch to another phrase unless asked
 - Do not give long explanations
+- Let the student speak more than you
+
 Start by greeting the student and introducing today's phrase practice.
       `.trim();
     }
@@ -512,22 +445,18 @@ Meaning: "${idiomMeaning}"
 Example: "${idiomExample}"
 
 Instructions:
-- Speak in very simple English
-- Speak only 1 very short sentence at a time
-- Explain the idiom briefly
-- Say only one short example
+- Speak in simple English
+- Keep sentences short
+- Explain the idiom in a very easy way
+- Say the example clearly
 - Ask the student to repeat the idiom
-- Ask the student to make their own sentence
-- After asking, stop and wait for the student
-- Keep your talking to about 20 percent
-- Let the student speak about 80 percent
-- If the student speaks correctly, reply with only short praise like:
-"Excellent", "Very good", "Good", or "Nice"
-- Do not give long praise
-- If the student makes a mistake, give only a short correction
-- After correction, ask the student to repeat correctly
+- Ask the student to make one simple sentence using the idiom
+- Encourage the student kindly
+- Correct gently
 - Do not teach multiple idioms at once
 - Do not give long explanations
+- Let the student speak more than you
+
 Start by greeting the student and introducing today's idiom practice.
       `.trim();
     }
@@ -548,20 +477,14 @@ Student lesson details:
 - Example: ${lesson?.example || ""}
 
 Instructions:
-- Speak in very simple English
-- Speak only 1 very short sentence at a time
-- Ask only one short question at a time
-- After asking, stop and wait for the student
-- Keep your talking to about 20 percent
-- Let the student speak about 80 percent
-- If the student speaks correctly, reply with only short praise like:
-"Excellent", "Very good", "Good", or "Nice"
-- Do not give long praise
-- If the student makes a mistake, give only a short correction
-- After correction, ask the student to repeat correctly
+- Speak in simple English
+- Keep sentences short
+- Focus only on today's lesson
+- Ask one short question at a time
+- Encourage the student to speak more
+- Correct gently
 - Do not give long explanations
-- Do not give long examples unless the student asks
-- Never answer your own question unless the student asks for help
+- Let the student speak more than you
 
 Start by greeting the student and beginning today's lesson.
     `.trim();
@@ -573,6 +496,7 @@ Start by greeting the student and beginning today's lesson.
     selectedDay,
     lesson,
   ]);
+
   const unlockAudio = async () => {
     try {
       if (!audioContextRef.current) {
@@ -663,14 +587,6 @@ Start by greeting the student and beginning today's lesson.
 
   const closeSession = useCallback(async () => {
     try {
-      if (sessionTimeoutRef.current) {
-        clearTimeout(sessionTimeoutRef.current);
-        sessionTimeoutRef.current = null;
-      }
-
-      sessionStartedAtRef.current = null;
-      setSessionSecondsLeft(15 * 60);
-
       if (dataChannelRef.current) {
         try {
           dataChannelRef.current.close();
@@ -883,16 +799,7 @@ Start by greeting the student and beginning today's lesson.
         sdp: sdpText,
       });
 
-      sessionStartedAtRef.current = Date.now();
-      setSessionSecondsLeft(15 * 60);
       setIsSessionActive(true);
-
-      sessionTimeoutRef.current = setTimeout(async () => {
-        await closeSession();
-        finalizeScore();
-        setStatusText("15-minute limit reached");
-        setDebugMessage("Session stopped automatically after 15 minutes.");
-      }, 15 * 60 * 1000);
     } catch (error) {
       console.error("Start voice error:", error);
       setDebugMessage(error?.message || "Unknown start voice error");
@@ -924,10 +831,6 @@ Start by greeting the student and beginning today's lesson.
       .join("\n\n");
   }, [aiTranscript]);
 
-  if (!authChecked) {
-    return <div className="min-h-screen bg-slate-50" />;
-  }
-
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto w-full max-w-md px-4 pb-24 pt-4">
@@ -939,21 +842,8 @@ Start by greeting the student and beginning today's lesson.
             Back
           </button>
 
-          <div className="flex items-center gap-2">
-            <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
-              {statusText}
-            </div>
-
-            <button
-              onClick={async () => {
-                await closeSession();
-                localStorage.removeItem("aminsir_user");
-                router.push("/login");
-              }}
-              className="rounded-xl bg-rose-600 px-3 py-2 text-xs font-bold text-white shadow-sm"
-            >
-              Logout
-            </button>
+          <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
+            {statusText}
           </div>
         </div>
 
@@ -962,11 +852,6 @@ Start by greeting the student and beginning today's lesson.
           <p className="mt-1 text-sm text-slate-600">
             Live lesson, phrase and idiom speaking practice
           </p>
-
-          <div className="mt-3 text-xs font-semibold text-slate-500">
-            Session Limit: {String(Math.floor(sessionSecondsLeft / 60)).padStart(2, "0")}:
-            {String(sessionSecondsLeft % 60).padStart(2, "0")}
-          </div>
         </div>
 
         <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -1069,6 +954,7 @@ Start by greeting the student and beginning today's lesson.
             </button>
           </div>
         </div>
+
         <div className="mb-4 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 p-4 text-white shadow-sm">
           <div className="text-xs font-semibold uppercase tracking-wide opacity-90">
             Current Lesson
@@ -1078,43 +964,6 @@ Start by greeting the student and beginning today's lesson.
             {lesson?.meaning || lesson?.speakingFocus || "Speaking practice"}
           </div>
         </div>
-
-        {lesson?.lessonType === "verb_tense" ? (
-          <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Verb Practice
-            </div>
-
-            <div className="mt-3 grid gap-3">
-              <div className="rounded-xl bg-slate-50 p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Verb
-                </div>
-                <div className="mt-1 text-lg font-bold uppercase text-slate-900">
-                  {lesson?.verb || lesson?.word || ""}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-slate-50 p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Meaning
-                </div>
-                <div className="mt-1 text-base font-semibold text-slate-900">
-                  {lesson?.verbMeaning || lesson?.meaning || ""}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-amber-50 p-4 ring-1 ring-amber-100">
-                <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">
-                  Sentence 1 / {totalVerbLines || 12}
-                </div>
-                <div className="mt-2 text-lg font-bold text-amber-900">
-                  {currentVerbLine}
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
 
         {practiceMode === "phrase" && currentPhrase?.english ? (
           <div className="mb-4 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 p-4 text-white shadow-sm">
