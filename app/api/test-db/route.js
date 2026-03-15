@@ -12,7 +12,7 @@ export async function GET() {
         JSON.stringify({ error: error.message }),
         {
           status: 500,
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" }
         }
       );
     }
@@ -20,19 +20,19 @@ export async function GET() {
     return new Response(
       JSON.stringify({
         success: true,
-        data,
+        data
       }),
       {
         status: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" }
       }
     );
   } catch (err) {
     return new Response(
-      JSON.stringify({ error: err?.message || String(err) }),
+      JSON.stringify({ error: err?.message || "Server error" }),
       {
         status: 500,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" }
       }
     );
   }
