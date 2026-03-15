@@ -311,6 +311,9 @@ function formatSessionLabel(dateKey) {
 export default function ChatPage() {
   const router = useRouter();
 
+  const [studentName, setStudentName] = useState("");
+  const [authChecked, setAuthChecked] = useState(false);
+
   const [selectedLevel, setSelectedLevel] = useState(1);
   const [selectedWeek, setSelectedWeek] = useState(1);
   const [selectedDay, setSelectedDay] = useState(1);
@@ -367,6 +370,31 @@ export default function ChatPage() {
     );
     return round(total / sessionHistory.length);
   }, [sessionHistory]);
+
+  useEffect(() => {
+    try {
+      const savedUser = localStorage.getItem("aminsir_user");
+
+      if (!savedUser) {
+        router.push("/login");
+        return;
+      }
+
+      const parsedUser = JSON.parse(savedUser || "{}");
+
+      if (!parsedUser?.name) {
+        localStorage.removeItem("aminsir_user");
+        router.push("/login");
+        return;
+      }
+
+      setStudentName(parsedUser.name);
+      setAuthChecked(true);
+    } catch {
+      localStorage.removeItem("aminsir_user");
+      router.push("/login");
+    }
+  }, [router]);
 
   useEffect(() => {
     latestUserTranscriptRef.current = userTranscript;
@@ -636,7 +664,10 @@ Start by greeting the student and introducing today's lesson.
 
       return {
         currentStreak: nextStreak,
-        bestScore: Math.max(Number(prev.bestScore || 0), Number(latestScore || 0)),
+        bestScore: Math.max(
+          Number(prev.bestScore || 0),
+          Number(latestScore || 0)
+        ),
         lastPracticeDate: today,
         totalPracticeSessions:
           prev.lastPracticeDate === today
@@ -708,11 +739,7 @@ Start by greeting the student and introducing today's lesson.
       gameBonus,
       mode: latestGameModeEnabledRef.current ? "Game" : "Normal",
     });
-  }, [
-    lesson,
-    updatePracticeStats,
-    addSessionHistory,
-  ]);
+  }, [lesson, updatePracticeStats, addSessionHistory]);
 
   useEffect(() => {
     if (!gameModeEnabled || !isSessionActive) return;
@@ -974,6 +1001,15 @@ Start by greeting the student and introducing today's lesson.
     setStatusText(fromAutoStop ? "Game stopped" : "Stopped");
   }
 
+  const handleLogout = useCallback(async () => {
+    try {
+      await closeSession();
+    } catch {}
+
+    localStorage.removeItem("aminsir_user");
+    router.push("/login");
+  }, [closeSession, router]);
+
   const transcriptPreview = useMemo(() => {
     return userTranscript
       .filter(Boolean)
@@ -982,10 +1018,14 @@ Start by greeting the student and introducing today's lesson.
       .join("\n");
   }, [userTranscript]);
 
+  if (!authChecked) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto w-full max-w-md px-4 pb-24 pt-4">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex items-center justify-between gap-2">
           <button
             onClick={() => router.push("/")}
             className="rounded-xl bg-white px-3 py-2 text-sm font-medium shadow-sm ring-1 ring-slate-200"
@@ -993,8 +1033,23 @@ Start by greeting the student and introducing today's lesson.
             Back
           </button>
 
-          <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
-            {statusText}
+          <div className="flex items-center gap-2">
+            {studentName ? (
+              <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
+                {studentName}
+              </div>
+            ) : null}
+
+            <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
+              {statusText}
+            </div>
+
+            <button
+              onClick={handleLogout}
+              className="rounded-xl bg-white px-3 py-2 text-sm font-medium shadow-sm ring-1 ring-slate-200"
+            >
+              Logout
+            </button>
           </div>
         </div>
 
@@ -1119,7 +1174,8 @@ Start by greeting the student and introducing today's lesson.
               >
                 {levels.map((lvl) => (
                   <option key={lvl.level} value={lvl.level}>
-                    Level {lvl.level} ({Array.isArray(lvl.weeks) ? lvl.weeks.length : 0} weeks)
+                    Level {lvl.level} (
+                    {Array.isArray(lvl.weeks) ? lvl.weeks.length : 0} weeks)
                   </option>
                 ))}
               </select>
@@ -1220,7 +1276,9 @@ Start by greeting the student and introducing today's lesson.
 
         {debugMessage ? (
           <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 p-4">
-            <div className="text-sm font-bold text-rose-800">Connection Error</div>
+            <div className="text-sm font-bold text-rose-800">
+              Connection Error
+            </div>
             <div className="mt-2 whitespace-pre-wrap break-words text-sm text-rose-700">
               {debugMessage}
             </div>
@@ -1239,7 +1297,9 @@ Start by greeting the student and introducing today's lesson.
               }`}
             >
               <div className="text-sm opacity-90">
-                {gameResult.completed ? "Challenge Complete" : "Challenge Attempt"}
+                {gameResult.completed
+                  ? "Challenge Complete"
+                  : "Challenge Attempt"}
               </div>
               <div className="mt-1 text-2xl font-extrabold">
                 {gameResult.completed ? "Well Done!" : "Keep Going!"}
@@ -1248,7 +1308,9 @@ Start by greeting the student and introducing today's lesson.
                 Turns: {gameResult.turns} / {gameResult.targetTurns}
               </div>
               <div className="mt-1 text-sm">Bonus Score: +{gameResult.bonus}</div>
-              <div className="mt-1 text-sm">Time Used: {gameResult.timeUsed}s</div>
+              <div className="mt-1 text-sm">
+                Time Used: {gameResult.timeUsed}s
+              </div>
             </div>
           </div>
         ) : null}
@@ -1329,7 +1391,8 @@ Start by greeting the student and introducing today's lesson.
 
           {!scoreCard ? (
             <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
-              Finish one speaking session to see score, feedback, and lesson relevance.
+              Finish one speaking session to see score, feedback, and lesson
+              relevance.
             </div>
           ) : (
             <div className="mt-4 space-y-3">
