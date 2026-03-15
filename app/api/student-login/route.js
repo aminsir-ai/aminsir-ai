@@ -1,4 +1,4 @@
-import { supabase } from "../../../lib/supabaseclient";
+import { supabase } from "../../../lib/supabaseclient.js";
 import bcrypt from "bcryptjs";
 
 export async function POST(req) {
@@ -8,7 +8,10 @@ export async function POST(req) {
     if (!loginId || !password) {
       return new Response(
         JSON.stringify({ error: "Missing login ID or password" }),
-        { status: 400 }
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }
       );
     }
 
@@ -16,19 +19,25 @@ export async function POST(req) {
       .from("students")
       .select("id, name, login_id, password_hash, is_active")
       .eq("login_id", loginId)
-      .single();
+      .maybeSingle();
 
     if (error || !student) {
       return new Response(
         JSON.stringify({ error: "Invalid login ID or password" }),
-        { status: 401 }
+        {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }
       );
     }
 
     if (student.is_active === false) {
       return new Response(
         JSON.stringify({ error: "Student account is inactive" }),
-        { status: 403 }
+        {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        }
       );
     }
 
@@ -37,7 +46,10 @@ export async function POST(req) {
     if (!ok) {
       return new Response(
         JSON.stringify({ error: "Invalid login ID or password" }),
-        { status: 401 }
+        {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }
       );
     }
 
@@ -50,11 +62,18 @@ export async function POST(req) {
           loginId: student.login_id,
         },
       }),
-      { status: 200 }
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }
     );
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), {
-      status: 500,
-    });
+    return new Response(
+      JSON.stringify({ error: err?.message || String(err) }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
   }
 }

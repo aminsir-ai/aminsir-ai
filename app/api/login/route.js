@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../lib/supabaseclient";
+import { supabase } from "../../../lib/supabaseclient.js";
 
 export async function POST(request) {
   try {
@@ -49,4 +49,3 @@ export async function POST(request) {
     );
   }
 }
-

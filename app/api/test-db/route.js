@@ -1,14 +1,39 @@
-import { supabase } from "../../../lib/supabaseclient";
+import { supabase } from "../../../lib/supabaseclient.js";
 
 export async function GET() {
-  const { data, error } = await supabase
-    .from('students')
-    .select('*')
+  try {
+    const { data, error } = await supabase
+      .from("students")
+      .select("*")
+      .limit(1);
 
-  if (error) {
-    return new Response(JSON.stringify({ error }), { status: 500 })
+    if (error) {
+      return new Response(
+        JSON.stringify({ error: error.message }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data,
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: err?.message || String(err) }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
   }
-
-  return new Response(JSON.stringify({ data }), { status: 200 })
 }
-
