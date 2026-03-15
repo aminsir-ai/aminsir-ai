@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabaseclient'
+import { supabase } from "../../../lib/supabaseclient";
 
 export async function GET() {
   const { data, error } = await supabase
@@ -11,3 +11,4 @@ export async function GET() {
 
   return new Response(JSON.stringify({ data }), { status: 200 })
 }
+
