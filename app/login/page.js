@@ -1,73 +1,51 @@
-"use client";
+import { NextResponse } from "next/server";
+import { supabase } from "@/lib/supabaseclient";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+export async function POST(request) {
+  try {
+    const body = await request.json();
+    const name = String(body?.name || "").trim();
+    const pin = String(body?.pin || "").trim();
 
-export default function LoginPage() {
-  const router = useRouter();
-  const [name, setName] = useState("");
-  const [pin, setPin] = useState("");
-  const [err, setErr] = useState("");
-
-  const onLogin = (e) => {
-    e.preventDefault();
-    setErr("");
-
-    // ✅ Your demo users (you can expand later)
-    const u = name.trim().toLowerCase();
-    const p = pin.trim();
-
-    if (u === "ali" && p === "2222") {
-      localStorage.setItem(
-        "aminsir_user",
-        JSON.stringify({ name: "Ali", pin: "2222" })
+    if (!name || !pin) {
+      return NextResponse.json(
+        { error: "Missing name or pin" },
+        { status: 400 }
       );
-      router.push("/chat");
-      return;
     }
 
-    setErr("Invalid user or PIN");
-  };
+    const { data, error } = await supabase
+      .from("students")
+      .select("id, name, pin")
+      .eq("name", name)
+      .eq("pin", pin)
+      .maybeSingle();
 
-  return (
-    <div style={{ padding: 24, fontFamily: "system-ui" }}>
-      <h2>Login</h2>
+    if (error) {
+      return NextResponse.json(
+        { error: error.message || "Login failed" },
+        { status: 500 }
+      );
+    }
 
-      <form onSubmit={onLogin} style={{ display: "grid", gap: 12, maxWidth: 340 }}>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="User (example: Ali)"
-          style={{ padding: 12, borderRadius: 10, border: "1px solid #ddd" }}
-        />
+    if (!data) {
+      return NextResponse.json(
+        { error: "Invalid login" },
+        { status: 401 }
+      );
+    }
 
-        <input
-          value={pin}
-          onChange={(e) => setPin(e.target.value)}
-          placeholder="PIN (example: 2222)"
-          type="password"
-          style={{ padding: 12, borderRadius: 10, border: "1px solid #ddd" }}
-        />
-
-        <button
-          type="submit"
-          style={{
-            padding: 12,
-            borderRadius: 12,
-            border: "none",
-            background: "black",
-            color: "white",
-            fontWeight: 800,
-            cursor: "pointer",
-          }}
-        >
-          Login
-        </button>
-
-        {err ? (
-          <div style={{ color: "crimson", fontWeight: 700 }}>{err}</div>
-        ) : null}
-      </form>
-    </div>
-  );
+    return NextResponse.json({
+      success: true,
+      student: {
+        id: data.id,
+        name: data.name,
+      },
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error?.message || "Server error" },
+      { status: 500 }
+    );
+  }
 }
