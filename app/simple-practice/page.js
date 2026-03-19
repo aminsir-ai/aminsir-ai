@@ -153,6 +153,7 @@ export default function SimplePracticePage() {
   const [showScoreCard, setShowScoreCard] = useState(false);
   const [score, setScore] = useState(null);
   const [voiceStatus, setVoiceStatus] = useState("idle");
+  const [saveStatus, setSaveStatus] = useState("idle");
 
   const recognitionRef = useRef(null);
   const transcriptRef = useRef("");
@@ -161,6 +162,8 @@ export default function SimplePracticePage() {
   const currentAudioRef = useRef(null);
   const isAiSpeakingRef = useRef(false);
   const phaseRef = useRef("lesson");
+  const conversationRef = useRef([]);
+  const endingSessionRef = useRef(false);
 
   const lessonSpeechLines = useMemo(
     () => [...LESSON.content, ...LESSON.parts, LESSON.closing],
@@ -169,9 +172,64 @@ export default function SimplePracticePage() {
 
   const scoreMeta = score ? getScoreCardMeta(score.overall) : null;
 
+  async function saveProgressToSupabase({
+    studentId,
+    studentName,
+    levelNo = 1,
+    weekNo = 1,
+    dayNo = 1,
+    lesson = "Day 1",
+    duration = 0,
+    score = {},
+    starsEarned = 0,
+    sentencesSpoken = 0,
+    roundsCompleted = 0,
+    completed = true,
+  }) {
+    try {
+      const response = await fetch("/api/progress", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          studentId,
+          studentName,
+          levelNo,
+          weekNo,
+          dayNo,
+          lesson,
+          duration,
+          score,
+          starsEarned,
+          sentencesSpoken,
+          roundsCompleted,
+          completed,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        console.error("Failed to save progress:", result);
+        return false;
+      }
+
+      console.log("Progress saved:", result);
+      return true;
+    } catch (error) {
+      console.error("Save progress error:", error);
+      return false;
+    }
+  }
+
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  useEffect(() => {
+    conversationRef.current = conversation;
+  }, [conversation]);
 
   useEffect(() => {
     const storedName =
@@ -212,14 +270,20 @@ export default function SimplePracticePage() {
 
     recognition.onend = () => {
       setIsListening(false);
-      if (stoppedRef.current) return;
+
+      if (stoppedRef.current || endingSessionRef.current) return;
 
       const finalText = transcriptRef.current.trim();
+
       if (finalText) {
         handleStudentMessage(finalText);
       } else {
         setTimeout(() => {
-          if (!isAiSpeakingRef.current && phaseRef.current === "practice") {
+          if (
+            !isAiSpeakingRef.current &&
+            phaseRef.current === "practice" &&
+            !endingSessionRef.current
+          ) {
             startListening();
           }
         }, 700);
@@ -231,7 +295,7 @@ export default function SimplePracticePage() {
     };
 
     recognitionRef.current = recognition;
-  }, [conversation]);
+  }, []);
 
   useEffect(() => {
     if (!timerRunning) return;
@@ -341,7 +405,16 @@ export default function SimplePracticePage() {
   }
 
   function startListening() {
-    if (!recognitionRef.current || isListening || isAiSpeakingRef.current) return;
+    if (
+      !recognitionRef.current ||
+      isListening ||
+      isAiSpeakingRef.current ||
+      phaseRef.current !== "practice" ||
+      endingSessionRef.current
+    ) {
+      return;
+    }
+
     try {
       stoppedRef.current = false;
       recognitionRef.current.start();
@@ -357,18 +430,22 @@ export default function SimplePracticePage() {
 
   async function startPractice() {
     stopLessonVoice();
+    endingSessionRef.current = false;
     setPhase("practice");
     phaseRef.current = "practice";
     setConversation([]);
+    conversationRef.current = [];
     setCurrentAiText("");
     setTimeLeft(10 * 60);
     setTimerRunning(true);
     setShowScoreCard(false);
     setScore(null);
+    setSaveStatus("idle");
 
     const opening = await callAminSirApi({ mode: "opening" });
     const nextConversation = [{ role: "assistant", content: opening }];
     setConversation(nextConversation);
+    conversationRef.current = nextConversation;
     setCurrentAiText(opening);
 
     speakText(opening, () => {
@@ -377,8 +454,15 @@ export default function SimplePracticePage() {
   }
 
   async function handleStudentMessage(text) {
-    const updatedConversation = [...conversation, { role: "user", content: text }];
+    if (endingSessionRef.current || phaseRef.current !== "practice") return;
+
+    const updatedConversation = [
+      ...conversationRef.current,
+      { role: "user", content: text },
+    ];
+
     setConversation(updatedConversation);
+    conversationRef.current = updatedConversation;
 
     const aiReply = await callAminSirApi({
       mode: "reply",
@@ -386,44 +470,96 @@ export default function SimplePracticePage() {
       history: updatedConversation,
     });
 
-    const nextConversation = [...updatedConversation, { role: "assistant", content: aiReply }];
+    const nextConversation = [
+      ...updatedConversation,
+      { role: "assistant", content: aiReply },
+    ];
+
     setConversation(nextConversation);
+    conversationRef.current = nextConversation;
     setCurrentAiText(aiReply);
 
     speakText(aiReply, () => {
       setTimeout(() => {
-        if (phaseRef.current === "practice") startListening();
+        if (phaseRef.current === "practice" && !endingSessionRef.current) {
+          startListening();
+        }
       }, 500);
     });
   }
 
-  function endSession() {
+  async function endSession() {
+    if (endingSessionRef.current) return;
+    endingSessionRef.current = true;
+
     clearInterval(timerRef.current);
     stopListening();
     stopCurrentAudio();
 
-    const finalScore = simpleScore(conversation, 10 * 60 - timeLeft);
+    const liveConversation = conversationRef.current;
+    const elapsedSeconds = 10 * 60 - timeLeft;
+    const finalScore = simpleScore(liveConversation, elapsedSeconds);
     const closing = `Great job today, ${studentName}. Keep practicing every day.`;
 
-    setConversation((prev) => [...prev, { role: "assistant", content: closing }]);
+    const studentTurns = liveConversation.filter((m) => m.role === "user").length;
+    const earnedStars =
+      finalScore.overall >= 90 ? 3 : finalScore.overall >= 75 ? 2 : 1;
+
+    const finalConversation = [
+      ...liveConversation,
+      { role: "assistant", content: closing },
+    ];
+
+    setConversation(finalConversation);
+    conversationRef.current = finalConversation;
     setCurrentAiText(closing);
-    speakText(closing);
 
     setTimerRunning(false);
     setPhase("finished");
     phaseRef.current = "finished";
     setScore(finalScore);
     setShowScoreCard(true);
+    setSaveStatus("saving");
+
+    speakText(closing);
+
+    const saved = await saveProgressToSupabase({
+      studentId:
+        studentName?.trim()?.toLowerCase().replace(/\s+/g, "_") || "student",
+      studentName: studentName?.trim() || "Student",
+      levelNo: 1,
+      weekNo: 1,
+      dayNo: 1,
+      lesson: LESSON.title || "Day 1",
+      duration: elapsedSeconds,
+      score: {
+        overall: finalScore.overall || 0,
+        breakdown: {
+          speaking: finalScore.speaking || 0,
+          grammar: finalScore.grammar || 0,
+          vocabulary: finalScore.vocabulary || 0,
+          confidence: finalScore.confidence || 0,
+        },
+      },
+      starsEarned: earnedStars,
+      sentencesSpoken: studentTurns,
+      roundsCompleted: 1,
+      completed: true,
+    });
+
+    setSaveStatus(saved ? "saved" : "error");
   }
 
   function restart() {
     clearInterval(timerRef.current);
     stopListening();
     stopCurrentAudio();
+    endingSessionRef.current = false;
 
     setPhase("lesson");
     phaseRef.current = "lesson";
     setConversation([]);
+    conversationRef.current = [];
     setCurrentAiText("");
     setIsListening(false);
     setLessonSpeaking(false);
@@ -431,6 +567,7 @@ export default function SimplePracticePage() {
     setTimerRunning(false);
     setShowScoreCard(false);
     setScore(null);
+    setSaveStatus("idle");
   }
 
   return (
@@ -681,6 +818,16 @@ export default function SimplePracticePage() {
                 <p className="text-sm font-semibold sm:text-base">Coach Tip</p>
                 <p className="mt-1 text-sm leading-6 text-slate-200 sm:mt-2 sm:text-base">
                   {scoreMeta.tip}
+                </p>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950 p-3 sm:mt-5 sm:p-4">
+                <p className="text-sm font-semibold text-slate-200">Progress Save Status</p>
+                <p className="mt-1 text-sm text-slate-300">
+                  {saveStatus === "saving" && "Saving progress to Supabase..."}
+                  {saveStatus === "saved" && "Progress saved successfully."}
+                  {saveStatus === "error" && "Progress save failed. Please check API route or env keys."}
+                  {saveStatus === "idle" && "Progress not saved yet."}
                 </p>
               </div>
 
