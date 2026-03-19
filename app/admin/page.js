@@ -6,58 +6,105 @@ export default function AdminPage() {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  async function addStudent() {
+  async function addStudent(e) {
+    e.preventDefault();
     setMessage("");
 
-    if (!name || !pin) {
+    const cleanName = String(name || "").trim();
+    const cleanPin = String(pin || "").trim();
+
+    if (!cleanName || !cleanPin) {
       setMessage("Please enter both name and PIN");
       return;
     }
 
-    const res = await fetch("/api/add-student", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name, pin }),
-    });
+    setLoading(true);
 
-    const data = await res.json();
+    try {
+      const res = await fetch("/api/add-student", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: cleanName,
+          pin: cleanPin,
+        }),
+      });
 
-    if (res.ok) {
-      setMessage("Student added successfully!");
-      setName("");
-      setPin("");
-    } else {
-      setMessage(data.error || "Error adding student");
+      const data = await res.json();
+
+      if (res.ok) {
+        setMessage(`Student added successfully! Login ID: ${data.loginId}`);
+        setName("");
+        setPin("");
+      } else {
+        setMessage(data?.error || "Error adding student");
+      }
+    } catch (err) {
+      setMessage("Something went wrong while adding student");
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <div style={{ padding: 40, fontFamily: "Arial" }}>
-      <h2>Amin Sir AI Tutor - Admin</h2>
-      <h3>Add Student</h3>
+    <main className="min-h-screen bg-slate-950 px-4 py-6 text-white">
+      <div className="mx-auto flex min-h-[80vh] max-w-md items-center justify-center">
+        <div className="w-full rounded-3xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
+          <div className="text-center">
+            <p className="text-sm text-slate-400">AminSirAI</p>
+            <h1 className="mt-2 text-2xl font-bold">Admin Panel</h1>
+            <p className="mt-2 text-sm text-slate-300">
+              Add a new student for speaking practice
+            </p>
+          </div>
 
-      <input
-        placeholder="Student Name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        style={{ display: "block", marginBottom: 10, padding: 8 }}
-      />
+          <form onSubmit={addStudent} className="mt-6 space-y-4">
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">
+                Student Name
+              </label>
+              <input
+                type="text"
+                placeholder="Enter student name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none"
+              />
+            </div>
 
-      <input
-        placeholder="PIN"
-        value={pin}
-        onChange={(e) => setPin(e.target.value)}
-        style={{ display: "block", marginBottom: 10, padding: 8 }}
-      />
+            <div>
+              <label className="mb-2 block text-sm text-slate-300">
+                PIN / Password
+              </label>
+              <input
+                type="text"
+                placeholder="Enter PIN or password"
+                value={pin}
+                onChange={(e) => setPin(e.target.value)}
+                className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none"
+              />
+            </div>
 
-      <button onClick={addStudent} style={{ padding: 10 }}>
-        Add Student
-      </button>
+            {message ? (
+              <div className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-200">
+                {message}
+              </div>
+            ) : null}
 
-      {message && <p style={{ marginTop: 15 }}>{message}</p>}
-    </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-2xl bg-white px-4 py-3 font-semibold text-slate-950 disabled:opacity-50"
+            >
+              {loading ? "Adding Student..." : "Add Student"}
+            </button>
+          </form>
+        </div>
+      </div>
+    </main>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 const LESSON = {
   title: "Day 1 - Foundation",
@@ -142,7 +143,10 @@ function getScoreCardMeta(overall) {
 }
 
 export default function SimplePracticePage() {
-  const [studentName, setStudentName] = useState("Student");
+  const router = useRouter();
+
+  const [studentName, setStudentName] = useState("");
+  const [studentId, setStudentId] = useState("");
   const [phase, setPhase] = useState("lesson");
   const [conversation, setConversation] = useState([]);
   const [currentAiText, setCurrentAiText] = useState("");
@@ -154,6 +158,7 @@ export default function SimplePracticePage() {
   const [score, setScore] = useState(null);
   const [voiceStatus, setVoiceStatus] = useState("idle");
   const [saveStatus, setSaveStatus] = useState("idle");
+  const [authChecked, setAuthChecked] = useState(false);
 
   const recognitionRef = useRef(null);
   const timerRef = useRef(null);
@@ -222,6 +227,16 @@ export default function SimplePracticePage() {
     }
   }
 
+  function handleLogout() {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("student");
+      localStorage.removeItem("studentName");
+      localStorage.removeItem("studentId");
+      localStorage.removeItem("studentLoginId");
+    }
+    router.replace("/login");
+  }
+
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
@@ -231,18 +246,40 @@ export default function SimplePracticePage() {
   }, [conversation]);
 
   useEffect(() => {
-    const storedName =
-      typeof window !== "undefined" ? localStorage.getItem("studentName") : null;
-    if (storedName) {
-      setStudentName(storedName);
-    }
-  }, []);
+    if (typeof window === "undefined") return;
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("studentName", studentName);
+    const rawStudent = localStorage.getItem("student");
+    const storedName = localStorage.getItem("studentName");
+    const storedId = localStorage.getItem("studentId");
+
+    if (!rawStudent && !storedName) {
+      router.replace("/login");
+      return;
     }
-  }, [studentName]);
+
+    try {
+      const parsed = rawStudent ? JSON.parse(rawStudent) : null;
+      const finalName = parsed?.name || storedName || "";
+      const finalId = String(parsed?.id || storedId || "");
+
+      if (!finalName) {
+        router.replace("/login");
+        return;
+      }
+
+      setStudentName(finalName);
+      setStudentId(finalId);
+      setAuthChecked(true);
+    } catch {
+      if (storedName) {
+        setStudentName(storedName);
+        setStudentId(String(storedId || ""));
+        setAuthChecked(true);
+      } else {
+        router.replace("/login");
+      }
+    }
+  }, [router]);
 
   useEffect(() => {
     const SpeechRecognition =
@@ -483,7 +520,7 @@ export default function SimplePracticePage() {
     try {
       opening = await callAminSirApi({ mode: "opening" });
     } catch {
-      opening = `Welcome ${studentName}. Say: English is a language.`;
+      opening = `Welcome ${studentName}. What did you learn today?`;
     }
 
     const nextConversation = [{ role: "assistant", content: opening }];
@@ -586,7 +623,9 @@ export default function SimplePracticePage() {
 
     const saved = await saveProgressToSupabase({
       studentId:
-        studentName?.trim()?.toLowerCase().replace(/\s+/g, "_") || "student",
+        studentId ||
+        studentName?.trim()?.toLowerCase().replace(/\s+/g, "_") ||
+        "student",
       studentName: studentName?.trim() || "Student",
       levelNo: 1,
       weekNo: 1,
@@ -634,24 +673,44 @@ export default function SimplePracticePage() {
     setSaveStatus("idle");
   }
 
+  if (!authChecked) {
+    return (
+      <main className="min-h-screen bg-slate-950 px-4 py-6 text-white">
+        <div className="mx-auto flex min-h-[70vh] max-w-3xl items-center justify-center">
+          <div className="rounded-3xl border border-slate-800 bg-slate-900 px-6 py-5 text-center">
+            <p className="text-lg font-semibold">Checking student login...</p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 px-3 py-4 text-white sm:px-4 sm:py-6">
       <div className="mx-auto max-w-6xl">
         <div className="mb-4 rounded-3xl border border-slate-800 bg-slate-900 p-4 sm:mb-6 sm:p-5">
-          <p className="text-sm text-slate-300">AminSirAI • OpenAI TTS Voice</p>
-          <h1 className="mt-2 text-xl font-bold leading-snug sm:text-2xl">
-            {LESSON.title}
-          </h1>
-          <p className="mt-2 text-sm text-slate-300 sm:text-base">{LESSON.subtitle}</p>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm text-slate-300">AminSirAI • OpenAI TTS Voice</p>
+              <h1 className="mt-2 text-xl font-bold leading-snug sm:text-2xl">
+                {LESSON.title}
+              </h1>
+              <p className="mt-2 text-sm text-slate-300 sm:text-base">
+                {LESSON.subtitle}
+              </p>
+            </div>
 
-          <div className="mt-4 max-w-sm">
-            <label className="mb-2 block text-sm text-slate-300">Student Name</label>
-            <input
-              value={studentName}
-              onChange={(e) => setStudentName(e.target.value)}
-              className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none"
-              placeholder="Enter logged-in student name"
-            />
+            <button
+              onClick={handleLogout}
+              className="rounded-2xl border border-red-700 bg-red-950/30 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Logout
+            </button>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
+            <p className="text-sm text-slate-400">Logged in as</p>
+            <p className="mt-1 text-lg font-semibold text-white">{studentName}</p>
           </div>
         </div>
 
