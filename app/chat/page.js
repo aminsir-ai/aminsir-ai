@@ -1,1506 +1,973 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
-import { COURSE_DATA } from "@/lib/courseData";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
-function getLevels() {
-  return Array.isArray(COURSE_DATA?.levels) ? COURSE_DATA.levels : [];
-}
+const SESSION_TIME = 600;
+const TOTAL_TOPICS = 10;
+const PATTERNS = ["affirmative", "negative", "question", "exclamatory"];
 
-function getLevel(levelNo) {
-  return (
-    getLevels().find((lvl) => Number(lvl?.level) === Number(levelNo)) || null
-  );
-}
+const WORDS_OF_DAY = [
+  { word: "magnificent", meaning: "bahut shandaar" },
+  { word: "confident", meaning: "atma-vishwas wala" },
+  { word: "brilliant", meaning: "bahut tez / zabardast" },
+  { word: "excellent", meaning: "bahut accha / behtareen" },
+  { word: "remarkable", meaning: "lajawab / khaas" },
+];
 
-function getWeeks(levelNo) {
-  const level = getLevel(levelNo);
-  return Array.isArray(level?.weeks) ? level.weeks : [];
-}
+const NOUN_ITEMS = [
+  {
+    type: "noun",
+    label: "book",
+    affirmative: "This is my book.",
+    negative: "This is not my book.",
+    question: "Is this your book?",
+    exclamatory: "What a beautiful book!",
+  },
+  {
+    type: "noun",
+    label: "pen",
+    affirmative: "This is my pen.",
+    negative: "This is not my pen.",
+    question: "Is this your pen?",
+    exclamatory: "What a beautiful pen!",
+  },
+  {
+    type: "noun",
+    label: "car",
+    affirmative: "This is my car.",
+    negative: "This is not my car.",
+    question: "Is this your car?",
+    exclamatory: "What a beautiful car!",
+  },
+  {
+    type: "noun",
+    label: "teacher",
+    affirmative: "This is my teacher.",
+    negative: "This is not my teacher.",
+    question: "Is this your teacher?",
+    exclamatory: "What a great teacher!",
+  },
+  {
+    type: "noun",
+    label: "student",
+    affirmative: "This is my student.",
+    negative: "This is not my student.",
+    question: "Is this your student?",
+    exclamatory: "What a smart student!",
+  },
+];
 
-function getWeek(levelNo, weekNo) {
-  return (
-    getWeeks(levelNo).find((wk) => Number(wk?.week) === Number(weekNo)) || null
-  );
-}
+const PRONOUN_ITEMS = [
+  {
+    type: "pronoun",
+    label: "I",
+    affirmative: "I am ready.",
+    negative: "I am not ready.",
+    question: "Am I ready?",
+    exclamatory: "How ready I am!",
+  },
+  {
+    type: "pronoun",
+    label: "you",
+    affirmative: "You are my friend.",
+    negative: "You are not late.",
+    question: "Are you my friend?",
+    exclamatory: "How kind you are!",
+  },
+  {
+    type: "pronoun",
+    label: "he",
+    affirmative: "He is my brother.",
+    negative: "He is not weak.",
+    question: "Is he my brother?",
+    exclamatory: "How strong he is!",
+  },
+  {
+    type: "pronoun",
+    label: "she",
+    affirmative: "She is my sister.",
+    negative: "She is not sad.",
+    question: "Is she my sister?",
+    exclamatory: "How smart she is!",
+  },
+  {
+    type: "pronoun",
+    label: "we",
+    affirmative: "We are students.",
+    negative: "We are not tired.",
+    question: "Are we students?",
+    exclamatory: "How happy we are!",
+  },
+];
 
-function getDays(levelNo, weekNo) {
-  const week = getWeek(levelNo, weekNo);
-  return Array.isArray(week?.days) ? week.days : [];
-}
+const LESSON_ITEMS = [...NOUN_ITEMS, ...PRONOUN_ITEMS];
 
-function getDay(levelNo, weekNo, dayNo) {
-  return (
-    getDays(levelNo, weekNo).find((d) => Number(d?.day) === Number(dayNo)) ||
-    null
-  );
-}
-
-function getInitialLessonState() {
-  return {
-    level: 1,
-    week: 1,
-    day: 1,
-  };
-}
-
-function cleanWords(text) {
+function normalizeText(text) {
   return String(text || "")
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/gi, " ")
-    .split(/\s+/)
-    .map((w) => w.trim())
-    .filter(Boolean);
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function uniqueWords(text) {
-  return [...new Set(cleanWords(text))];
+function tokenize(text) {
+  return normalizeText(text).split(" ").filter(Boolean);
 }
 
-function clamp(num, min, max) {
-  return Math.max(min, Math.min(max, num));
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function round(num) {
-  return Math.round(num);
-}
+function exactishMatch(expected, actual) {
+  const e = tokenize(expected);
+  const a = tokenize(actual);
 
-function getLessonKeywords(lesson) {
-  const stopWords = new Set([
-    "the",
-    "is",
-    "are",
-    "am",
-    "was",
-    "were",
-    "be",
-    "been",
-    "being",
-    "a",
-    "an",
-    "and",
-    "or",
-    "to",
-    "of",
-    "in",
-    "on",
-    "at",
-    "for",
-    "with",
-    "from",
-    "by",
-    "about",
-    "this",
-    "that",
-    "these",
-    "those",
-    "my",
-    "your",
-    "his",
-    "her",
-    "their",
-    "our",
-    "i",
-    "you",
-    "he",
-    "she",
-    "it",
-    "we",
-    "they",
-    "me",
-    "him",
-    "them",
-    "do",
-    "does",
-    "did",
-    "have",
-    "has",
-    "had",
-    "can",
-    "could",
-    "will",
-    "would",
-    "should",
-    "today",
-    "lesson",
-    "day",
-    "week",
-    "level",
-    "practice",
-    "speaking",
-    "english",
-    "learn",
-    "talk",
-    "speak",
-  ]);
+  if (normalizeText(expected) === normalizeText(actual)) return true;
+  if (e.length !== a.length) return false;
 
-  const combined = [
-    lesson?.title || "",
-    lesson?.topic || "",
-    lesson?.description || "",
-    lesson?.goal || "",
-    lesson?.content || "",
-    Array.isArray(lesson?.keywords) ? lesson.keywords.join(" ") : "",
-  ].join(" ");
-
-  return uniqueWords(combined).filter(
-    (word) => word.length > 2 && !stopWords.has(word)
-  );
-}
-
-function buildScoreCard({ utterances, lesson, gameBonus = 0 }) {
-  const joinedText = utterances.join(" ").trim();
-  const totalWords = cleanWords(joinedText).length;
-  const turnCount = utterances.filter((u) => String(u || "").trim()).length;
-  const avgWordsPerTurn = turnCount > 0 ? totalWords / turnCount : 0;
-
-  const lessonKeywords = getLessonKeywords(lesson);
-  const spokenWordsSet = new Set(uniqueWords(joinedText));
-  const matchedKeywords = lessonKeywords.filter((k) => spokenWordsSet.has(k));
-  const keywordCoverage =
-    lessonKeywords.length > 0
-      ? matchedKeywords.length / lessonKeywords.length
-      : 0;
-
-  let participationScore = 0;
-  if (turnCount >= 10) participationScore = 95;
-  else if (turnCount >= 8) participationScore = 88;
-  else if (turnCount >= 6) participationScore = 80;
-  else if (turnCount >= 4) participationScore = 68;
-  else if (turnCount >= 2) participationScore = 55;
-  else if (turnCount >= 1) participationScore = 40;
-  else participationScore = 20;
-
-  let fluencyScore = 0;
-  if (avgWordsPerTurn >= 18) fluencyScore = 94;
-  else if (avgWordsPerTurn >= 14) fluencyScore = 88;
-  else if (avgWordsPerTurn >= 10) fluencyScore = 80;
-  else if (avgWordsPerTurn >= 7) fluencyScore = 70;
-  else if (avgWordsPerTurn >= 4) fluencyScore = 58;
-  else if (avgWordsPerTurn >= 1) fluencyScore = 45;
-  else fluencyScore = 20;
-
-  let pronunciationScore = 0;
-  if (totalWords >= 120) pronunciationScore = 90;
-  else if (totalWords >= 90) pronunciationScore = 84;
-  else if (totalWords >= 60) pronunciationScore = 77;
-  else if (totalWords >= 35) pronunciationScore = 68;
-  else if (totalWords >= 15) pronunciationScore = 58;
-  else if (totalWords >= 1) pronunciationScore = 45;
-  else pronunciationScore = 20;
-
-  const lessonRelevanceScore = clamp(
-    round(40 + keywordCoverage * 60),
-    20,
-    98
-  );
-
-  const confidenceBonus =
-    totalWords >= 80 && turnCount >= 6 ? 5 : totalWords >= 40 ? 3 : 0;
-
-  const overall = clamp(
-    round(
-      (participationScore +
-        fluencyScore +
-        pronunciationScore +
-        lessonRelevanceScore) /
-        4 +
-        confidenceBonus +
-        gameBonus
-    ),
-    20,
-    99
-  );
-
-  let status = "Keep Practicing";
-  if (overall >= 90) status = "Excellent";
-  else if (overall >= 80) status = "Very Good";
-  else if (overall >= 70) status = "Good Job";
-  else if (overall >= 60) status = "Good Start";
-
-  let feedback = "Speak more full sentences next time.";
-  if (overall >= 90) {
-    feedback = "Excellent speaking. Keep this same confidence and clarity.";
-  } else if (overall >= 80) {
-    feedback =
-      "Very good work. Try to give slightly longer answers for even better fluency.";
-  } else if (overall >= 70) {
-    feedback =
-      "Good job. Try to answer with more detail and use lesson words naturally.";
-  } else if (overall >= 60) {
-    feedback =
-      "Good start. Speak a little more and try to make complete sentences.";
+  let same = 0;
+  for (let i = 0; i < e.length; i += 1) {
+    if (e[i] === a[i]) same += 1;
   }
 
-  if (gameBonus > 0) {
-    feedback += ` Game bonus added: +${gameBonus}.`;
-  }
-
-  return {
-    overall,
-    status,
-    feedback,
-    participationScore,
-    fluencyScore,
-    pronunciationScore,
-    lessonRelevanceScore,
-    totalWords,
-    turnCount,
-    avgWordsPerTurn: round(avgWordsPerTurn),
-    matchedKeywords,
-    gameBonus,
-  };
+  return same / e.length >= 0.85;
 }
 
-function getTodayKey() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = `${now.getMonth() + 1}`.padStart(2, "0");
-  const day = `${now.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function getFeedback(score) {
+  if (score >= 9) return "Excellent work!";
+  if (score >= 7) return "Very good!";
+  if (score >= 5) return "Good effort!";
+  return "Keep practicing!";
 }
 
-function getYesterdayKey() {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  const year = d.getFullYear();
-  const month = `${d.getMonth() + 1}`.padStart(2, "0");
-  const day = `${d.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function getTrophy(score) {
+  if (score >= 9) return "🏆";
+  if (score >= 7) return "🥇";
+  if (score >= 5) return "🥈";
+  return "🥉";
 }
 
-function formatPracticeDate(dateKey) {
-  if (!dateKey) return "Not yet";
-  if (dateKey === getTodayKey()) return "Today";
-  if (dateKey === getYesterdayKey()) return "Yesterday";
-
-  try {
-    const date = new Date(`${dateKey}T00:00:00`);
-    return date.toLocaleDateString();
-  } catch {
-    return dateKey;
-  }
+function getEmoji(score) {
+  if (score >= 9) return "😄";
+  if (score >= 7) return "🙂";
+  if (score >= 5) return "😊";
+  return "😌";
 }
 
-function getInitialStats() {
-  return {
-    currentStreak: 0,
-    bestScore: 0,
-    lastPracticeDate: "",
-    totalPracticeSessions: 0,
-  };
-}
-
-function formatSessionLabel(dateKey) {
-  if (!dateKey) return "-";
-  if (dateKey === getTodayKey()) return "Today";
-  if (dateKey === getYesterdayKey()) return "Yesterday";
-
-  try {
-    const d = new Date(`${dateKey}T00:00:00`);
-    return d.toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return dateKey;
-  }
+function getPatternLabel(pattern) {
+  if (pattern === "affirmative") return "Affirmative";
+  if (pattern === "negative") return "Negative";
+  if (pattern === "question") return "Question";
+  if (pattern === "exclamatory") return "Exclamatory";
+  return "";
 }
 
 export default function ChatPage() {
-  const router = useRouter();
+  const searchParams = useSearchParams();
+  const inputRef = useRef(null);
+  const topicIndexRef = useRef(0);
+  const patternIndexRef = useRef(0);
+  const wrongCountRef = useRef(0);
+  const finishedRef = useRef(false);
+  const voicesRef = useRef([]);
+  const recognitionRef = useRef(null);
+  const isListeningRef = useRef(false);
 
-  const [studentName, setStudentName] = useState("");
-  const [authChecked, setAuthChecked] = useState(false);
+  const studentName = useMemo(() => {
+    const fromQuery =
+      searchParams.get("studentName") ||
+      searchParams.get("student") ||
+      searchParams.get("name");
+    return fromQuery?.trim() || "Student";
+  }, [searchParams]);
 
-  const [selectedLevel, setSelectedLevel] = useState(1);
-  const [selectedWeek, setSelectedWeek] = useState(1);
-  const [selectedDay, setSelectedDay] = useState(1);
+  const [started, setStarted] = useState(false);
+  const [sessionEnded, setSessionEnded] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(SESSION_TIME);
+  const [messages, setMessages] = useState([]);
+  const [showScore, setShowScore] = useState(false);
+  const [score, setScore] = useState(0);
+  const [status, setStatus] = useState("Ready");
+  const [wordOfDay, setWordOfDay] = useState({ word: "", meaning: "" });
 
-  const [soundEnabled, setSoundEnabled] = useState(false);
-  const [statusText, setStatusText] = useState("Ready");
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [isSessionActive, setIsSessionActive] = useState(false);
-
-  const [aiTranscript, setAiTranscript] = useState([]);
-  const [userTranscript, setUserTranscript] = useState([]);
-  const [scoreCard, setScoreCard] = useState(null);
-  const [debugMessage, setDebugMessage] = useState("");
-  const [practiceStats, setPracticeStats] = useState(getInitialStats());
-
-  const [gameModeEnabled, setGameModeEnabled] = useState(false);
-  const [gameSecondsLeft, setGameSecondsLeft] = useState(60);
-  const [gameResult, setGameResult] = useState(null);
-
-  const [sessionHistory, setSessionHistory] = useState([]);
-
-  const peerConnectionRef = useRef(null);
-  const dataChannelRef = useRef(null);
-  const localStreamRef = useRef(null);
-  const remoteAudioRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const gameTimerRef = useRef(null);
-  const autoStoppingRef = useRef(false);
-
-  const latestUserTranscriptRef = useRef([]);
-  const latestGameSecondsLeftRef = useRef(60);
-  const latestGameModeEnabledRef = useRef(false);
-
-  const GAME_DURATION = 60;
-  const GAME_TARGET_TURNS = 5;
-
-  const levels = useMemo(() => getLevels(), []);
-  const weeks = useMemo(() => getWeeks(selectedLevel), [selectedLevel]);
-  const days = useMemo(
-    () => getDays(selectedLevel, selectedWeek),
-    [selectedLevel, selectedWeek]
-  );
-
-  const lesson = useMemo(
-    () => getDay(selectedLevel, selectedWeek, selectedDay),
-    [selectedLevel, selectedWeek, selectedDay]
-  );
-
-  const averageHistoryScore = useMemo(() => {
-    if (!sessionHistory.length) return 0;
-    const total = sessionHistory.reduce(
-      (sum, item) => sum + Number(item?.score || 0),
-      0
-    );
-    return round(total / sessionHistory.length);
-  }, [sessionHistory]);
+  const [topicIndex, setTopicIndex] = useState(0);
+  const [patternIndex, setPatternIndex] = useState(0);
+  const [answer, setAnswer] = useState("");
+  const [currentPrompt, setCurrentPrompt] = useState("");
+  const [currentTopicName, setCurrentTopicName] = useState("");
+  const [currentTopicType, setCurrentTopicType] = useState("");
+  const [lastResult, setLastResult] = useState("");
+  const [voiceReady, setVoiceReady] = useState(false);
+  const [speechReady, setSpeechReady] = useState(false);
+  const [isListening, setIsListening] = useState(false);
 
   useEffect(() => {
-    try {
-      const savedUser = localStorage.getItem("aminsir_user");
-
-      if (!savedUser) {
-        router.push("/login");
-        return;
-      }
-
-      const parsedUser = JSON.parse(savedUser || "{}");
-
-      if (!parsedUser?.name) {
-        localStorage.removeItem("aminsir_user");
-        router.push("/login");
-        return;
-      }
-
-      setStudentName(parsedUser.name);
-      setAuthChecked(true);
-    } catch {
-      localStorage.removeItem("aminsir_user");
-      router.push("/login");
-    }
-  }, [router]);
-
-  useEffect(() => {
-    latestUserTranscriptRef.current = userTranscript;
-  }, [userTranscript]);
-
-  useEffect(() => {
-    latestGameSecondsLeftRef.current = gameSecondsLeft;
-  }, [gameSecondsLeft]);
-
-  useEffect(() => {
-    latestGameModeEnabledRef.current = gameModeEnabled;
-  }, [gameModeEnabled]);
-
-  useEffect(() => {
-    try {
-      const saved = JSON.parse(
-        localStorage.getItem("aminsir_mobile_lesson_selection") || "{}"
-      );
-      const fallback = getInitialLessonState();
-
-      const level = Number(saved?.level || fallback.level);
-      const week = Number(saved?.week || fallback.week);
-      const day = Number(saved?.day || fallback.day);
-
-      const validLevel = getLevel(level) ? level : 1;
-      const validWeek = getWeek(validLevel, week) ? week : 1;
-      const validDay = getDay(validLevel, validWeek, day) ? day : 1;
-
-      setSelectedLevel(validLevel);
-      setSelectedWeek(validWeek);
-      setSelectedDay(validDay);
-    } catch {
-      setSelectedLevel(1);
-      setSelectedWeek(1);
-      setSelectedDay(1);
-    }
+    const selected =
+      WORDS_OF_DAY[Math.floor(Math.random() * WORDS_OF_DAY.length)];
+    setWordOfDay(selected);
   }, []);
 
   useEffect(() => {
-    try {
-      const savedStats = JSON.parse(
-        localStorage.getItem("aminsir_practice_stats") || "{}"
-      );
-      setPracticeStats({
-        currentStreak: Number(savedStats?.currentStreak || 0),
-        bestScore: Number(savedStats?.bestScore || 0),
-        lastPracticeDate: savedStats?.lastPracticeDate || "",
-        totalPracticeSessions: Number(savedStats?.totalPracticeSessions || 0),
-      });
-    } catch {
-      setPracticeStats(getInitialStats());
-    }
+    if (!started || sessionEnded) return;
 
-    try {
-      const savedHistory = JSON.parse(
-        localStorage.getItem("aminsir_session_history") || "[]"
-      );
-      setSessionHistory(Array.isArray(savedHistory) ? savedHistory : []);
-    } catch {
-      setSessionHistory([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(
-      "aminsir_mobile_lesson_selection",
-      JSON.stringify({
-        level: selectedLevel,
-        week: selectedWeek,
-        day: selectedDay,
-      })
-    );
-  }, [selectedLevel, selectedWeek, selectedDay]);
-
-  useEffect(() => {
-    localStorage.setItem(
-      "aminsir_practice_stats",
-      JSON.stringify(practiceStats)
-    );
-  }, [practiceStats]);
-
-  useEffect(() => {
-    localStorage.setItem(
-      "aminsir_session_history",
-      JSON.stringify(sessionHistory)
-    );
-  }, [sessionHistory]);
-
-  useEffect(() => {
-    const validWeeks = getWeeks(selectedLevel);
-    if (!validWeeks.find((w) => Number(w?.week) === Number(selectedWeek))) {
-      setSelectedWeek(1);
-      setSelectedDay(1);
-      return;
-    }
-
-    const validDays = getDays(selectedLevel, selectedWeek);
-    if (!validDays.find((d) => Number(d?.day) === Number(selectedDay))) {
-      setSelectedDay(1);
-    }
-  }, [selectedLevel, selectedWeek, selectedDay]);
-
-  const safeLessonTitle =
-    lesson?.title ||
-    lesson?.topic ||
-    `Level ${selectedLevel} Week ${selectedWeek} Day ${selectedDay}`;
-
-  const safeUserTurnCount = useMemo(() => {
-    return userTranscript.filter((u) => String(u || "").trim()).length;
-  }, [userTranscript]);
-
-  const lessonPrompt = useMemo(() => {
-    const gameInstructions = gameModeEnabled
-      ? `
-Game Mode is ON.
-Challenge duration: ${GAME_DURATION} seconds.
-Encourage the student to speak quickly and clearly.
-Ask short questions.
-Keep energy high.
-Help the student complete at least ${GAME_TARGET_TURNS} speaking turns.
-`
-      : "";
-
-    return `
-You are Amin Sir AI Speaking Coach.
-
-Student lesson details:
-- Level: ${selectedLevel}
-- Week: ${selectedWeek}
-- Day: ${selectedDay}
-- Lesson title: ${lesson?.title || ""}
-- Lesson topic: ${lesson?.topic || ""}
-- Lesson description: ${lesson?.description || ""}
-- Lesson goal: ${lesson?.goal || ""}
-- Lesson content: ${lesson?.content || ""}
-
-Teaching style:
-- Speak in simple, clear English
-- Use very short sentences
-- Keep conversation mobile-friendly and easy
-- Encourage the student to speak more
-- Ask one question at a time
-- Do not give long lectures
-- Let the student speak most of the time
-- Correct politely
-- Motivate the student
-- Focus on today's lesson only
-
-${gameInstructions}
-
-Start by greeting the student and introducing today's lesson.
-`.trim();
-  }, [
-    selectedLevel,
-    selectedWeek,
-    selectedDay,
-    lesson,
-    gameModeEnabled,
-  ]);
-
-  const clearGameTimer = useCallback(() => {
-    if (gameTimerRef.current) {
-      clearInterval(gameTimerRef.current);
-      gameTimerRef.current = null;
-    }
-  }, []);
-
-  const resetSessionUi = useCallback(() => {
-    setAiTranscript([]);
-    setUserTranscript([]);
-    latestUserTranscriptRef.current = [];
-    setScoreCard(null);
-    setDebugMessage("");
-    setGameResult(null);
-    setGameSecondsLeft(GAME_DURATION);
-    latestGameSecondsLeftRef.current = GAME_DURATION;
-    autoStoppingRef.current = false;
-    clearGameTimer();
-  }, [GAME_DURATION, clearGameTimer]);
-
-  const unlockAudio = async () => {
-    try {
-      if (!audioContextRef.current) {
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        audioContextRef.current = new AudioCtx();
-      }
-
-      if (audioContextRef.current.state === "suspended") {
-        await audioContextRef.current.resume();
-      }
-
-      const oscillator = audioContextRef.current.createOscillator();
-      const gain = audioContextRef.current.createGain();
-      gain.gain.value = 0.0001;
-      oscillator.connect(gain);
-      gain.connect(audioContextRef.current.destination);
-      oscillator.start();
-      oscillator.stop(audioContextRef.current.currentTime + 0.05);
-
-      setSoundEnabled(true);
-      setStatusText("Sound enabled");
-    } catch (error) {
-      console.error("Audio unlock error:", error);
-      setStatusText("Could not enable sound");
-      setDebugMessage(error?.message || "Audio unlock failed");
-    }
-  };
-
-  const closeSession = useCallback(async () => {
-    try {
-      clearGameTimer();
-
-      if (dataChannelRef.current) {
-        try {
-          dataChannelRef.current.close();
-        } catch {}
-        dataChannelRef.current = null;
-      }
-
-      if (peerConnectionRef.current) {
-        try {
-          peerConnectionRef.current.getSenders().forEach((sender) => {
-            try {
-              sender.track?.stop();
-            } catch {}
-          });
-          peerConnectionRef.current.close();
-        } catch {}
-        peerConnectionRef.current = null;
-      }
-
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => {
-          try {
-            track.stop();
-          } catch {}
-        });
-        localStreamRef.current = null;
-      }
-
-      if (remoteAudioRef.current) {
-        try {
-          remoteAudioRef.current.pause();
-          remoteAudioRef.current.srcObject = null;
-        } catch {}
-      }
-    } finally {
-      setIsSessionActive(false);
-      setIsConnecting(false);
-    }
-  }, [clearGameTimer]);
-
-  const updatePracticeStats = useCallback((latestScore) => {
-    const today = getTodayKey();
-    const yesterday = getYesterdayKey();
-
-    setPracticeStats((prev) => {
-      let nextStreak = 1;
-
-      if (prev.lastPracticeDate === today) {
-        nextStreak = prev.currentStreak || 1;
-      } else if (prev.lastPracticeDate === yesterday) {
-        nextStreak = (prev.currentStreak || 0) + 1;
-      } else {
-        nextStreak = 1;
-      }
-
-      return {
-        currentStreak: nextStreak,
-        bestScore: Math.max(
-          Number(prev.bestScore || 0),
-          Number(latestScore || 0)
-        ),
-        lastPracticeDate: today,
-        totalPracticeSessions:
-          prev.lastPracticeDate === today
-            ? Number(prev.totalPracticeSessions || 0)
-            : Number(prev.totalPracticeSessions || 0) + 1,
-      };
-    });
-  }, []);
-
-  const addSessionHistory = useCallback(
-    ({ score, gameBonus, mode }) => {
-      const today = getTodayKey();
-
-      const entry = {
-        id: `${Date.now()}`,
-        dateKey: today,
-        lessonTitle: safeLessonTitle,
-        score: Number(score || 0),
-        gameBonus: Number(gameBonus || 0),
-        mode: mode || "Normal",
-        level: selectedLevel,
-        week: selectedWeek,
-        day: selectedDay,
-      };
-
-      setSessionHistory((prev) => {
-        const next = [entry, ...prev];
-        return next.slice(0, 7);
-      });
-    },
-    [safeLessonTitle, selectedLevel, selectedWeek, selectedDay]
-  );
-
-  const finalizeScore = useCallback(() => {
-    const latestUtterances = latestUserTranscriptRef.current || [];
-    const latestTurnCount = latestUtterances.filter((u) =>
-      String(u || "").trim()
-    ).length;
-
-    let gameBonus = 0;
-    let completed = false;
-
-    if (latestGameModeEnabledRef.current) {
-      completed = latestTurnCount >= GAME_TARGET_TURNS;
-      gameBonus = completed ? 8 : latestTurnCount >= 3 ? 3 : 0;
-
-      setGameResult({
-        completed,
-        turns: latestTurnCount,
-        targetTurns: GAME_TARGET_TURNS,
-        bonus: gameBonus,
-        timeUsed: GAME_DURATION - latestGameSecondsLeftRef.current,
-      });
-    } else {
-      setGameResult(null);
-    }
-
-    const result = buildScoreCard({
-      utterances: latestUtterances,
-      lesson,
-      gameBonus,
-    });
-
-    setScoreCard(result);
-    updatePracticeStats(result.overall);
-
-    addSessionHistory({
-      score: result.overall,
-      gameBonus,
-      mode: latestGameModeEnabledRef.current ? "Game" : "Normal",
-    });
-  }, [lesson, updatePracticeStats, addSessionHistory]);
-
-  useEffect(() => {
-    if (!gameModeEnabled || !isSessionActive) return;
-
-    gameTimerRef.current = setInterval(() => {
-      setGameSecondsLeft((prev) => {
+    const timer = setInterval(() => {
+      setTimeLeft((prev) => {
         if (prev <= 1) {
-          if (!autoStoppingRef.current) {
-            autoStoppingRef.current = true;
-            setStatusText("Game finished");
-            setTimeout(() => {
-              stopVoice(true);
-            }, 100);
-          }
+          stopSession(true);
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
 
+    return () => clearInterval(timer);
+  }, [started, sessionEnded]);
+
+  useEffect(() => {
+    if (started && !sessionEnded && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [started, sessionEnded, topicIndex, patternIndex, lastResult, answer]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
+    function loadVoices() {
+      voicesRef.current = window.speechSynthesis.getVoices() || [];
+      setVoiceReady(true);
+    }
+
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+
     return () => {
-      clearGameTimer();
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.onvoiceschanged = null;
+      }
     };
-  }, [gameModeEnabled, isSessionActive, clearGameTimer]);
-
-  const handleRealtimeEvent = useCallback((event) => {
-    if (!event || typeof event !== "object") return;
-
-    const type = event.type || "";
-
-    if (type === "response.audio_transcript.delta") {
-      const delta = event.delta || "";
-      if (!delta) return;
-      setAiTranscript((prev) => {
-        const copy = [...prev];
-        if (copy.length === 0) {
-          copy.push(delta);
-        } else {
-          copy[copy.length - 1] = (copy[copy.length - 1] || "") + delta;
-        }
-        return copy;
-      });
-      return;
-    }
-
-    if (type === "response.audio_transcript.done") {
-      setAiTranscript((prev) => {
-        const copy = [...prev];
-        if (copy.length === 0) return prev;
-        copy.push("");
-        return copy;
-      });
-      return;
-    }
-
-    if (type === "conversation.item.input_audio_transcription.completed") {
-      const text = event.transcript || event.text || "";
-      if (text.trim()) {
-        setUserTranscript((prev) => [...prev, text.trim()]);
-      }
-      return;
-    }
-
-    if (type === "conversation.item.created") {
-      const item = event.item || {};
-      const role = item.role || "";
-      const content = Array.isArray(item.content) ? item.content : [];
-
-      const textParts = content
-        .map((c) => c?.transcript || c?.text || c?.value || "")
-        .filter(Boolean)
-        .join(" ")
-        .trim();
-
-      if (!textParts) return;
-
-      if (role === "user") {
-        setUserTranscript((prev) => [...prev, textParts]);
-      } else if (role === "assistant") {
-        setAiTranscript((prev) => [...prev, textParts]);
-      }
-    }
   }, []);
 
-  const startVoice = async () => {
-    if (isConnecting || isSessionActive) return;
+  useEffect(() => {
+    if (typeof window === "undefined") return;
 
-    resetSessionUi();
-    setIsConnecting(true);
-    setStatusText(gameModeEnabled ? "Game connecting..." : "Connecting...");
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    try {
-      if (!soundEnabled) {
-        await unlockAudio();
-      }
-
-      const tokenResponse = await fetch("/api/realtime", {
-        method: "GET",
-        cache: "no-store",
-      });
-
-      const rawText = await tokenResponse.text();
-
-      let tokenData = null;
-      try {
-        tokenData = rawText ? JSON.parse(rawText) : null;
-      } catch {
-        tokenData = null;
-      }
-
-      if (!tokenResponse.ok) {
-        const errorMessage =
-          tokenData?.details ||
-          tokenData?.error ||
-          rawText ||
-          `HTTP ${tokenResponse.status}`;
-        throw new Error(errorMessage);
-      }
-
-      const ephemeralKey =
-        tokenData?.client_secret?.value ||
-        tokenData?.client_secret ||
-        tokenData?.value ||
-        tokenData?.token ||
-        tokenData?.ephemeralKey ||
-        "";
-
-      const model =
-        tokenData?.model || "gpt-4o-realtime-preview-2024-12-17";
-
-      if (!ephemeralKey) {
-        throw new Error("Realtime client_secret.value missing from /api/realtime");
-      }
-
-      const pc = new RTCPeerConnection();
-      peerConnectionRef.current = pc;
-
-      const remoteAudio = new Audio();
-      remoteAudio.autoplay = true;
-      remoteAudio.playsInline = true;
-      remoteAudioRef.current = remoteAudio;
-
-      pc.ontrack = (event) => {
-        const [stream] = event.streams || [];
-        if (stream && remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = stream;
-          remoteAudioRef.current
-            .play()
-            .catch((err) => console.error("Remote audio play error:", err));
-        }
-      };
-
-      const localStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      localStreamRef.current = localStream;
-
-      localStream.getTracks().forEach((track) => {
-        pc.addTrack(track, localStream);
-      });
-
-      const dc = pc.createDataChannel("oai-events");
-      dataChannelRef.current = dc;
-
-      dc.onopen = () => {
-        setStatusText(gameModeEnabled ? "Game live" : "Connected");
-
-        dc.send(
-          JSON.stringify({
-            type: "session.update",
-            session: {
-              modalities: ["text", "audio"],
-              instructions: lessonPrompt,
-              input_audio_transcription: {
-                model: "gpt-4o-mini-transcribe",
-              },
-            },
-          })
-        );
-
-        dc.send(
-          JSON.stringify({
-            type: "response.create",
-            response: {
-              modalities: ["audio", "text"],
-              instructions: gameModeEnabled
-                ? `Game Mode is ON. Greet the student warmly and start a fast speaking challenge for today's lesson: ${safeLessonTitle}.`
-                : `Greet the student warmly and begin today's lesson: ${safeLessonTitle}.`,
-            },
-          })
-        );
-      };
-
-      dc.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          handleRealtimeEvent(data);
-        } catch (err) {
-          console.error("Data channel parse error:", err);
-        }
-      };
-
-      dc.onerror = (err) => {
-        console.error("Data channel error:", err);
-      };
-
-      const offer = await pc.createOffer({
-        offerToReceiveAudio: true,
-      });
-      await pc.setLocalDescription(offer);
-
-      const sdpResponse = await fetch(
-        `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
-        {
-          method: "POST",
-          body: offer.sdp,
-          headers: {
-            Authorization: `Bearer ${ephemeralKey}`,
-            "Content-Type": "application/sdp",
-          },
-        }
-      );
-
-      const sdpText = await sdpResponse.text();
-
-      if (!sdpResponse.ok) {
-        throw new Error(sdpText || "Failed to connect realtime session");
-      }
-
-      await pc.setRemoteDescription({
-        type: "answer",
-        sdp: sdpText,
-      });
-
-      setIsSessionActive(true);
-      if (gameModeEnabled) {
-        setGameSecondsLeft(GAME_DURATION);
-        latestGameSecondsLeftRef.current = GAME_DURATION;
-      }
-      setStatusText(gameModeEnabled ? "Game live" : "Lesson live");
-    } catch (error) {
-      console.error("Start voice error:", error);
-      setDebugMessage(error?.message || "Unknown start voice error");
-      setStatusText("Connection failed");
-      await closeSession();
-    } finally {
-      setIsConnecting(false);
+    if (!SpeechRecognition) {
+      setSpeechReady(false);
+      return;
     }
-  };
 
-  async function stopVoice(fromAutoStop = false) {
-    setStatusText(fromAutoStop ? "Challenge complete" : "Stopping...");
-    await closeSession();
-    finalizeScore();
-    setStatusText(fromAutoStop ? "Game stopped" : "Stopped");
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      isListeningRef.current = true;
+      setIsListening(true);
+      setStatus("Listening...");
+    };
+
+    recognition.onend = () => {
+      isListeningRef.current = false;
+      setIsListening(false);
+      if (started && !sessionEnded) {
+        setStatus("Waiting for answer");
+      }
+    };
+
+    recognition.onerror = () => {
+      isListeningRef.current = false;
+      setIsListening(false);
+      if (started && !sessionEnded) {
+        setStatus("Speech error");
+      }
+    };
+
+    recognition.onresult = (event) => {
+      let finalText = "";
+      let interimText = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const transcript = event.results[i][0]?.transcript || "";
+        if (event.results[i].isFinal) {
+          finalText += transcript + " ";
+        } else {
+          interimText += transcript + " ";
+        }
+      }
+
+      const merged = `${finalText} ${interimText}`.trim();
+      if (merged) {
+        setAnswer(merged);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    setSpeechReady(true);
+
+    return () => {
+      try {
+        recognition.stop();
+      } catch {}
+    };
+  }, [started, sessionEnded]);
+
+  function speakText(text) {
+    if (typeof window === "undefined" || !window.speechSynthesis || !text) return;
+
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.9;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+
+    const voices = voicesRef.current || [];
+    const preferredVoice =
+      voices.find((v) => /en-in/i.test(v.lang)) ||
+      voices.find((v) => /en-gb/i.test(v.lang)) ||
+      voices.find((v) => /english/i.test(v.name)) ||
+      voices[0];
+
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+    }
+
+    utterance.onstart = () => {
+      if (started && !sessionEnded) {
+        setStatus("AI speaking");
+      }
+    };
+
+    utterance.onend = () => {
+      if (started && !sessionEnded && !isListeningRef.current) {
+        setStatus("Waiting for answer");
+      }
+    };
+
+    window.speechSynthesis.speak(utterance);
   }
 
-  const handleLogout = useCallback(async () => {
+  function startListening() {
+    if (!recognitionRef.current || isListeningRef.current) return;
+
     try {
-      await closeSession();
+      setAnswer("");
+      recognitionRef.current.start();
     } catch {}
-
-    localStorage.removeItem("aminsir_user");
-    router.push("/login");
-  }, [closeSession, router]);
-
-  const transcriptPreview = useMemo(() => {
-    return userTranscript
-      .filter(Boolean)
-      .slice(-5)
-      .map((item, index) => `${index + 1}. ${item}`)
-      .join("\n");
-  }, [userTranscript]);
-
-  if (!authChecked) {
-    return null;
   }
+
+  function stopListening() {
+    if (!recognitionRef.current || !isListeningRef.current) return;
+
+    try {
+      recognitionRef.current.stop();
+    } catch {}
+  }
+
+  function addMessage(role, text) {
+    setMessages((prev) => [...prev, { role, text }]);
+  }
+
+  function addAiMessage(text, shouldSpeak = true) {
+    addMessage("ai", text);
+    if (shouldSpeak) {
+      speakText(text);
+    }
+  }
+
+  function getCurrentItem() {
+    return LESSON_ITEMS[topicIndexRef.current];
+  }
+
+  function getCurrentPattern() {
+    return PATTERNS[patternIndexRef.current];
+  }
+
+  function getCurrentSentence() {
+    const item = getCurrentItem();
+    const pattern = getCurrentPattern();
+    return item?.[pattern] || "";
+  }
+
+  function presentCurrentItem() {
+    const item = getCurrentItem();
+    const sentence = getCurrentSentence();
+    const pattern = getCurrentPattern();
+
+    setTopicIndex(topicIndexRef.current);
+    setPatternIndex(patternIndexRef.current);
+    setCurrentPrompt(sentence);
+    setCurrentTopicName(item.label);
+    setCurrentTopicType(item.type);
+    setLastResult("");
+    setAnswer("");
+
+    if (item.type === "noun") {
+      addAiMessage(
+        `Aaj ka noun hai ${item.label}. ${getPatternLabel(
+          pattern
+        )} sentence English mein bolo. ${sentence}`
+      );
+    } else {
+      addAiMessage(
+        `Aaj ka pronoun hai ${item.label}. ${getPatternLabel(
+          pattern
+        )} sentence English mein bolo. ${sentence}`
+      );
+    }
+
+    setStatus("Waiting for answer");
+  }
+
+  function moveToNextItem() {
+    const isLastPattern = patternIndexRef.current >= PATTERNS.length - 1;
+    const isLastTopic = topicIndexRef.current >= LESSON_ITEMS.length - 1;
+
+    if (isLastPattern) {
+      setScore((prev) => Math.min(prev + 1, TOTAL_TOPICS));
+    }
+
+    if (isLastPattern && isLastTopic) {
+      stopSession(true);
+      return;
+    }
+
+    if (isLastPattern) {
+      topicIndexRef.current += 1;
+      patternIndexRef.current = 0;
+    } else {
+      patternIndexRef.current += 1;
+    }
+
+    wrongCountRef.current = 0;
+    setAnswer("");
+    presentCurrentItem();
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!started || sessionEnded) return;
+
+    const cleanAnswer = answer.trim();
+    if (!cleanAnswer) return;
+
+    stopListening();
+    addMessage("you", cleanAnswer);
+
+    const expected = getCurrentSentence();
+    const correct = exactishMatch(expected, cleanAnswer);
+
+    if (correct) {
+      const okText = "Very good. Ab dusra.";
+      addMessage("system", okText);
+      speakText(okText);
+      setStatus("Correct");
+      setLastResult("correct");
+      moveToNextItem();
+      return;
+    }
+
+    wrongCountRef.current += 1;
+
+    if (wrongCountRef.current >= 2) {
+      const hintText = `Try this way: ${expected}`;
+      addMessage("system", hintText);
+      speakText(hintText);
+    } else {
+      addMessage("system", "Try again.");
+      speakText("Try again.");
+    }
+
+    setStatus("Try again");
+    setLastResult("wrong");
+    setAnswer("");
+  }
+
+  function handleHint() {
+    if (!started || sessionEnded) return;
+    const expected = getCurrentSentence();
+    const hintText = `Hint: ${expected}`;
+    addMessage("system", hintText);
+    speakText(expected);
+  }
+
+  function handleReplay() {
+    if (!currentPrompt) return;
+    speakText(currentPrompt);
+  }
+
+  function startSession() {
+    topicIndexRef.current = 0;
+    patternIndexRef.current = 0;
+    wrongCountRef.current = 0;
+    finishedRef.current = false;
+
+    setMessages([]);
+    setScore(0);
+    setTimeLeft(SESSION_TIME);
+    setTopicIndex(0);
+    setPatternIndex(0);
+    setAnswer("");
+    setCurrentPrompt("");
+    setCurrentTopicName("");
+    setCurrentTopicType("");
+    setLastResult("");
+    setShowScore(false);
+    setSessionEnded(false);
+    setStarted(true);
+    setStatus("Lesson started");
+
+    const welcomeText = `Welcome, ${studentName}. Aaj hamara lesson Noun aur Pronoun hai. Main aapko word dunga. Aapko English mein bolna hai. Speech box mein aapka jawab aa jayega. Sahi hua to very good. Galat hua to try again. Do baar galat hua to main sentence sikhaunga.`;
+    addAiMessage(welcomeText);
+
+    setTimeout(() => {
+      presentCurrentItem();
+    }, 400);
+  }
+
+  function stopSession(showPopup = true) {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+
+    stopListening();
+    setStarted(false);
+    setSessionEnded(true);
+    setStatus("Session ended");
+    setCurrentPrompt("");
+    addAiMessage("Excellent work. Keep practicing.");
+
+    if (showPopup) {
+      setShowScore(true);
+    }
+  }
+
+  const progressPercent = Math.round((score / TOTAL_TOPICS) * 100);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto w-full max-w-md px-4 pb-24 pt-4">
-        <div className="mb-4 flex items-center justify-between gap-2">
-          <button
-            onClick={() => router.push("/")}
-            className="rounded-xl bg-white px-3 py-2 text-sm font-medium shadow-sm ring-1 ring-slate-200"
+    <div
+      style={{
+        padding: 16,
+        fontFamily: "Arial, sans-serif",
+        background: "#f6f7fb",
+        minHeight: "100vh",
+      }}
+    >
+      <div
+        style={{
+          maxWidth: 900,
+          margin: "0 auto",
+        }}
+      >
+        <h2 style={{ marginBottom: 16 }}>Amin Sir AI E-Book Practice</h2>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: 12,
+            marginBottom: 16,
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 12,
+              padding: 14,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+            }}
           >
-            Back
-          </button>
-
-          <div className="flex items-center gap-2">
-            {studentName ? (
-              <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
-                {studentName}
-              </div>
-            ) : null}
-
-            <div className="rounded-full bg-white px-3 py-1 text-xs font-semibold shadow-sm ring-1 ring-slate-200">
-              {statusText}
-            </div>
-
-            <button
-              onClick={handleLogout}
-              className="rounded-xl bg-white px-3 py-2 text-sm font-medium shadow-sm ring-1 ring-slate-200"
-            >
-              Logout
-            </button>
-          </div>
-        </div>
-
-        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <h1 className="text-xl font-bold">Amin Sir AI Speaking Coach</h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Mobile lesson speaking practice
-          </p>
-        </div>
-
-        <div className="mb-4 rounded-2xl bg-gradient-to-br from-orange-500 to-rose-500 p-4 text-white shadow-sm">
-          <div className="text-sm font-bold">Daily Practice Progress</div>
-
-          <div className="mt-3 grid grid-cols-3 gap-3">
-            <div className="rounded-xl bg-white/15 p-3 text-center">
-              <div className="text-xs opacity-90">Streak</div>
-              <div className="mt-1 text-xl font-extrabold">
-                {practiceStats.currentStreak}
-              </div>
-              <div className="text-xs opacity-90">days</div>
-            </div>
-
-            <div className="rounded-xl bg-white/15 p-3 text-center">
-              <div className="text-xs opacity-90">Best Score</div>
-              <div className="mt-1 text-xl font-extrabold">
-                {practiceStats.bestScore}
-              </div>
-              <div className="text-xs opacity-90">/100</div>
-            </div>
-
-            <div className="rounded-xl bg-white/15 p-3 text-center">
-              <div className="text-xs opacity-90">Sessions</div>
-              <div className="mt-1 text-xl font-extrabold">
-                {practiceStats.totalPracticeSessions}
-              </div>
-              <div className="text-xs opacity-90">total</div>
+            <div style={{ fontSize: 13, color: "#666" }}>Time Left</div>
+            <div style={{ fontSize: 24, fontWeight: "bold" }}>
+              ⏱ {formatTime(timeLeft)}
             </div>
           </div>
 
-          <div className="mt-3 rounded-xl bg-white/10 px-3 py-2 text-sm">
-            Last Practice:{" "}
-            <span className="font-semibold">
-              {formatPracticeDate(practiceStats.lastPracticeDate)}
-            </span>
-          </div>
-        </div>
-
-        <div className="mb-4 rounded-2xl bg-gradient-to-br from-violet-600 to-fuchsia-600 p-4 text-white shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-base font-bold">Speaking Game Mode</div>
-              <div className="mt-1 text-sm text-violet-100">
-                60-second challenge with bonus score
-              </div>
-            </div>
-
-            <button
-              onClick={() => setGameModeEnabled((prev) => !prev)}
-              disabled={isSessionActive || isConnecting}
-              className={`rounded-full px-4 py-2 text-sm font-bold shadow-sm ${
-                gameModeEnabled
-                  ? "bg-white text-violet-700"
-                  : "bg-white/15 text-white ring-1 ring-white/30"
-              } ${
-                isSessionActive || isConnecting
-                  ? "opacity-60"
-                  : "active:scale-[0.98]"
-              }`}
-            >
-              {gameModeEnabled ? "ON" : "OFF"}
-            </button>
-          </div>
-
-          <div className="mt-3 grid grid-cols-3 gap-3">
-            <div className="rounded-xl bg-white/15 p-3 text-center">
-              <div className="text-xs opacity-90">Timer</div>
-              <div className="mt-1 text-xl font-extrabold">
-                {gameSecondsLeft}s
-              </div>
-            </div>
-
-            <div className="rounded-xl bg-white/15 p-3 text-center">
-              <div className="text-xs opacity-90">Target</div>
-              <div className="mt-1 text-xl font-extrabold">
-                {GAME_TARGET_TURNS}
-              </div>
-              <div className="text-xs opacity-90">turns</div>
-            </div>
-
-            <div className="rounded-xl bg-white/15 p-3 text-center">
-              <div className="text-xs opacity-90">Current</div>
-              <div className="mt-1 text-xl font-extrabold">
-                {safeUserTurnCount}
-              </div>
-              <div className="text-xs opacity-90">turns</div>
-            </div>
-          </div>
-
-          <div className="mt-3 rounded-xl bg-white/10 px-3 py-2 text-sm">
-            Mode:{" "}
-            <span className="font-semibold">
-              {gameModeEnabled ? "Challenge Active" : "Normal Lesson"}
-            </span>
-          </div>
-        </div>
-
-        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <h2 className="mb-3 text-base font-bold">Choose Lesson</h2>
-
-          <div className="grid grid-cols-1 gap-3">
-            <div>
-              <label className="mb-1 block text-sm font-medium">Level</label>
-              <select
-                value={selectedLevel}
-                onChange={(e) => {
-                  const nextLevel = Number(e.target.value);
-                  setSelectedLevel(nextLevel);
-                  setSelectedWeek(1);
-                  setSelectedDay(1);
-                }}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none"
-              >
-                {levels.map((lvl) => (
-                  <option key={lvl.level} value={lvl.level}>
-                    Level {lvl.level} (
-                    {Array.isArray(lvl.weeks) ? lvl.weeks.length : 0} weeks)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-sm font-medium">Week</label>
-              <select
-                value={selectedWeek}
-                onChange={(e) => {
-                  setSelectedWeek(Number(e.target.value));
-                  setSelectedDay(1);
-                }}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none"
-              >
-                {weeks.map((wk) => (
-                  <option key={wk.week} value={wk.week}>
-                    Week {wk.week}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-sm font-medium">Day</label>
-              <select
-                value={selectedDay}
-                onChange={(e) => setSelectedDay(Number(e.target.value))}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none"
-              >
-                {days.map((d) => (
-                  <option key={d.day} value={d.day}>
-                    Day {d.day}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <div className="mb-4 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 p-4 text-white shadow-sm">
-          <div className="text-xs font-semibold uppercase tracking-wide opacity-90">
-            Lesson of the Day
-          </div>
-          <div className="mt-2 text-lg font-bold">{safeLessonTitle}</div>
-
-          {lesson?.description ? (
-            <p className="mt-2 text-sm leading-6 text-blue-50">
-              {lesson.description}
-            </p>
-          ) : null}
-
-          <div className="mt-3 flex flex-wrap gap-2 text-xs">
-            <span className="rounded-full bg-white/15 px-3 py-1">
-              Level {selectedLevel}
-            </span>
-            <span className="rounded-full bg-white/15 px-3 py-1">
-              Week {selectedWeek}
-            </span>
-            <span className="rounded-full bg-white/15 px-3 py-1">
-              Day {selectedDay}
-            </span>
-          </div>
-        </div>
-
-        <div className="mb-4 grid grid-cols-1 gap-3">
-          <button
-            onClick={unlockAudio}
-            className="rounded-2xl bg-emerald-600 px-4 py-4 text-sm font-bold text-white shadow-sm active:scale-[0.99]"
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 12,
+              padding: 14,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+            }}
           >
-            Enable Sound
-          </button>
-
-          <button
-            onClick={startVoice}
-            disabled={isConnecting || isSessionActive}
-            className={`rounded-2xl px-4 py-4 text-sm font-bold text-white shadow-sm active:scale-[0.99] ${
-              isConnecting || isSessionActive ? "bg-slate-400" : "bg-blue-600"
-            }`}
-          >
-            {isConnecting
-              ? "Connecting..."
-              : gameModeEnabled
-              ? "Start Game Voice"
-              : "Start Voice"}
-          </button>
-
-          <button
-            onClick={() => stopVoice(false)}
-            disabled={!isSessionActive && !isConnecting}
-            className={`rounded-2xl px-4 py-4 text-sm font-bold text-white shadow-sm active:scale-[0.99] ${
-              !isSessionActive && !isConnecting ? "bg-slate-400" : "bg-rose-600"
-            }`}
-          >
-            Stop
-          </button>
-        </div>
-
-        {debugMessage ? (
-          <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 p-4">
-            <div className="text-sm font-bold text-rose-800">
-              Connection Error
-            </div>
-            <div className="mt-2 whitespace-pre-wrap break-words text-sm text-rose-700">
-              {debugMessage}
+            <div style={{ fontSize: 13, color: "#666" }}>Progress</div>
+            <div style={{ fontSize: 24, fontWeight: "bold" }}>
+              📊 {score} / {TOTAL_TOPICS}
             </div>
           </div>
-        ) : null}
 
-        {gameResult ? (
-          <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-            <h2 className="text-base font-bold">Game Result</h2>
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 12,
+              padding: 14,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+            }}
+          >
+            <div style={{ fontSize: 13, color: "#666" }}>Word of the Day</div>
+            <div style={{ fontSize: 18, fontWeight: "bold" }}>
+              ⭐ {wordOfDay.word}
+            </div>
+            <div style={{ fontSize: 14, color: "#555" }}>
+              {wordOfDay.meaning}
+            </div>
+          </div>
 
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 12,
+              padding: 14,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+            }}
+          >
+            <div style={{ fontSize: 13, color: "#666" }}>Status</div>
+            <div style={{ fontSize: 18, fontWeight: "bold" }}>{status}</div>
+            <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+              Voice: {voiceReady ? "Ready" : "Loading"} | Speech:{" "}
+              {speechReady ? "Ready" : "Not supported"}
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: 14,
+            padding: 16,
+            marginBottom: 16,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+          }}
+        >
+          <div style={{ marginBottom: 10, fontSize: 14, color: "#666" }}>
+            Topic: <b>{currentTopicName || "-"}</b> | Type:{" "}
+            <b>{getPatternLabel(PATTERNS[patternIndex]) || "-"}</b> | Category:{" "}
+            <b>{currentTopicType || "-"}</b>
+          </div>
+
+          <div
+            style={{
+              width: "100%",
+              height: 10,
+              background: "#eceef5",
+              borderRadius: 999,
+              overflow: "hidden",
+              marginBottom: 18,
+            }}
+          >
             <div
-              className={`mt-3 rounded-2xl p-4 text-white ${
-                gameResult.completed
-                  ? "bg-gradient-to-br from-emerald-600 to-teal-600"
-                  : "bg-gradient-to-br from-amber-500 to-orange-500"
-              }`}
+              style={{
+                width: `${progressPercent}%`,
+                height: "100%",
+                background: "#222",
+                borderRadius: 999,
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              border: "2px solid #e5e7ef",
+              borderRadius: 16,
+              padding: 24,
+              textAlign: "center",
+              background:
+                lastResult === "correct"
+                  ? "#ecfff1"
+                  : lastResult === "wrong"
+                  ? "#fff4f4"
+                  : "#fafbff",
+            }}
+          >
+            <div style={{ fontSize: 14, color: "#666", marginBottom: 10 }}>
+              Main Practice Sentence
+            </div>
+            <div
+              style={{
+                fontSize: 30,
+                fontWeight: "bold",
+                lineHeight: 1.4,
+                color: "#111",
+                marginBottom: 18,
+              }}
             >
-              <div className="text-sm opacity-90">
-                {gameResult.completed
-                  ? "Challenge Complete"
-                  : "Challenge Attempt"}
-              </div>
-              <div className="mt-1 text-2xl font-extrabold">
-                {gameResult.completed ? "Well Done!" : "Keep Going!"}
-              </div>
-              <div className="mt-2 text-sm">
-                Turns: {gameResult.turns} / {gameResult.targetTurns}
-              </div>
-              <div className="mt-1 text-sm">Bonus Score: +{gameResult.bonus}</div>
-              <div className="mt-1 text-sm">
-                Time Used: {gameResult.timeUsed}s
-              </div>
+              {currentPrompt || "Click Start Practice to begin"}
             </div>
+
+            <button
+              type="button"
+              onClick={handleReplay}
+              disabled={!currentPrompt}
+              style={{
+                padding: "10px 16px",
+                border: "none",
+                borderRadius: 8,
+                background: currentPrompt ? "#2b6cb0" : "#aaa",
+                color: "#fff",
+                cursor: currentPrompt ? "pointer" : "not-allowed",
+                fontWeight: "bold",
+              }}
+            >
+              🔊 Replay Sentence
+            </button>
           </div>
-        ) : null}
+        </div>
 
-        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-base font-bold">Progress History</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Last 7 practice sessions
-              </p>
-            </div>
+        {!started && !sessionEnded && (
+          <button
+            onClick={startSession}
+            style={{
+              marginBottom: 16,
+              padding: "12px 22px",
+              background: "green",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              cursor: "pointer",
+              fontSize: 16,
+              fontWeight: "bold",
+            }}
+          >
+            ▶ Start Practice
+          </button>
+        )}
 
-            <div className="rounded-xl bg-slate-100 px-3 py-2 text-right">
-              <div className="text-[11px] text-slate-500">Avg Score</div>
-              <div className="text-lg font-extrabold text-slate-900">
-                {averageHistoryScore}
-              </div>
-            </div>
+        {started && !sessionEnded && (
+          <button
+            onClick={() => stopSession(true)}
+            style={{
+              marginBottom: 16,
+              padding: "12px 22px",
+              background: "#c62828",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              cursor: "pointer",
+              fontSize: 16,
+              fontWeight: "bold",
+            }}
+          >
+            ■ Stop Session
+          </button>
+        )}
+
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: 14,
+            padding: 16,
+            marginBottom: 16,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+          }}
+        >
+          <div style={{ fontSize: 16, fontWeight: "bold", marginBottom: 12 }}>
+            Conversation
           </div>
 
-          {!sessionHistory.length ? (
-            <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
-              No practice history yet.
-            </div>
-          ) : (
-            <div className="mt-4 space-y-3">
-              {sessionHistory.map((item) => (
+          <div
+            style={{
+              border: "1px solid #e5e7ef",
+              borderRadius: 12,
+              minHeight: 220,
+              maxHeight: 360,
+              overflowY: "auto",
+              padding: 12,
+              background: "#fafbff",
+            }}
+          >
+            {messages.length === 0 ? (
+              <div style={{ color: "#666" }}>Conversation will appear here.</div>
+            ) : (
+              messages.map((m, i) => (
                 <div
-                  key={item.id}
-                  className="rounded-2xl border border-slate-200 p-3"
+                  key={i}
+                  style={{
+                    marginBottom: 10,
+                    padding: 10,
+                    borderRadius: 10,
+                    background:
+                      m.role === "ai"
+                        ? "#eef4ff"
+                        : m.role === "you"
+                        ? "#f3fff2"
+                        : "#fff7e8",
+                  }}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-bold text-slate-900">
-                        {formatSessionLabel(item.dateKey)}
-                      </div>
-                      <div className="mt-1 truncate text-sm text-slate-600">
-                        {item.lessonTitle}
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                        <span className="rounded-full bg-slate-100 px-2.5 py-1 font-medium text-slate-700">
-                          L{item.level}-W{item.week}-D{item.day}
-                        </span>
-                        <span
-                          className={`rounded-full px-2.5 py-1 font-medium ${
-                            item.mode === "Game"
-                              ? "bg-violet-100 text-violet-700"
-                              : "bg-blue-100 text-blue-700"
-                          }`}
-                        >
-                          {item.mode}
-                        </span>
-                        {Number(item.gameBonus || 0) > 0 ? (
-                          <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-700">
-                            Bonus +{item.gameBonus}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl bg-slate-900 px-3 py-2 text-center text-white">
-                      <div className="text-[11px] opacity-80">Score</div>
-                      <div className="text-xl font-extrabold">{item.score}</div>
-                    </div>
-                  </div>
+                  <b>
+                    {m.role === "ai"
+                      ? "AI"
+                      : m.role === "you"
+                      ? "You"
+                      : "System"}
+                    :
+                  </b>{" "}
+                  {m.text}
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <h2 className="text-base font-bold">Speaking Score</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Score appears after you press Stop
-          </p>
-
-          {!scoreCard ? (
-            <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
-              Finish one speaking session to see score, feedback, and lesson
-              relevance.
-            </div>
-          ) : (
-            <div className="mt-4 space-y-3">
-              <div className="rounded-2xl bg-slate-900 p-4 text-white">
-                <div className="text-sm opacity-80">Overall Score</div>
-                <div className="mt-1 text-4xl font-extrabold">
-                  {scoreCard.overall}/100
-                </div>
-                <div className="mt-2 inline-flex rounded-full bg-white/10 px-3 py-1 text-sm font-semibold">
-                  {scoreCard.status}
-                </div>
-                {scoreCard.gameBonus > 0 ? (
-                  <div className="mt-2 text-sm text-emerald-300">
-                    Game Bonus Applied: +{scoreCard.gameBonus}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-slate-50 p-3">
-                  <div className="text-xs text-slate-500">Participation</div>
-                  <div className="mt-1 text-lg font-bold">
-                    {scoreCard.participationScore}
-                  </div>
-                </div>
-
-                <div className="rounded-xl bg-slate-50 p-3">
-                  <div className="text-xs text-slate-500">Fluency</div>
-                  <div className="mt-1 text-lg font-bold">
-                    {scoreCard.fluencyScore}
-                  </div>
-                </div>
-
-                <div className="rounded-xl bg-slate-50 p-3">
-                  <div className="text-xs text-slate-500">Pronunciation</div>
-                  <div className="mt-1 text-lg font-bold">
-                    {scoreCard.pronunciationScore}
-                  </div>
-                </div>
-
-                <div className="rounded-xl bg-slate-50 p-3">
-                  <div className="text-xs text-slate-500">Lesson Match</div>
-                  <div className="mt-1 text-lg font-bold">
-                    {scoreCard.lessonRelevanceScore}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 p-3">
-                <div className="text-sm font-semibold">Session Details</div>
-                <div className="mt-2 grid grid-cols-3 gap-2 text-center">
-                  <div className="rounded-lg bg-slate-50 p-2">
-                    <div className="text-xs text-slate-500">Turns</div>
-                    <div className="text-base font-bold">
-                      {scoreCard.turnCount}
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-slate-50 p-2">
-                    <div className="text-xs text-slate-500">Words</div>
-                    <div className="text-base font-bold">
-                      {scoreCard.totalWords}
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-slate-50 p-2">
-                    <div className="text-xs text-slate-500">Avg/Turn</div>
-                    <div className="text-base font-bold">
-                      {scoreCard.avgWordsPerTurn}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
-                <div className="font-semibold">Feedback</div>
-                <div className="mt-1">{scoreCard.feedback}</div>
-              </div>
-
-              {scoreCard.matchedKeywords?.length > 0 ? (
-                <div className="rounded-xl bg-emerald-50 p-3">
-                  <div className="text-sm font-semibold text-emerald-900">
-                    Lesson words you used
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {scoreCard.matchedKeywords.slice(0, 10).map((word) => (
-                      <span
-                        key={word}
-                        className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800"
-                      >
-                        {word}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <h2 className="text-base font-bold">Recent Student Speech</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            Last captured speaking lines
-          </p>
-
-          <div className="mt-3 min-h-[100px] whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
-            {transcriptPreview || "No student speech captured yet."}
+              ))
+            )}
           </div>
         </div>
+
+        {started && !sessionEnded && (
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: 14,
+              padding: 16,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+            }}
+          >
+            <div style={{ marginBottom: 10, fontWeight: "bold" }}>
+              Your Answer
+            </div>
+
+            <textarea
+              ref={inputRef}
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              placeholder="Speak or type your English sentence here"
+              rows={3}
+              style={{
+                width: "100%",
+                padding: "14px",
+                border: "1px solid #d8dce8",
+                borderRadius: 10,
+                marginBottom: 12,
+                fontSize: 16,
+                outline: "none",
+                resize: "vertical",
+              }}
+            />
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={startListening}
+                disabled={!speechReady || isListening}
+                style={{
+                  padding: "12px 18px",
+                  border: "none",
+                  borderRadius: 8,
+                  background: !speechReady || isListening ? "#aaa" : "#0f766e",
+                  color: "#fff",
+                  cursor:
+                    !speechReady || isListening ? "not-allowed" : "pointer",
+                  fontWeight: "bold",
+                }}
+              >
+                🎤 Start Speaking
+              </button>
+
+              <button
+                type="button"
+                onClick={stopListening}
+                disabled={!isListening}
+                style={{
+                  padding: "12px 18px",
+                  border: "none",
+                  borderRadius: 8,
+                  background: !isListening ? "#aaa" : "#b91c1c",
+                  color: "#fff",
+                  cursor: !isListening ? "not-allowed" : "pointer",
+                  fontWeight: "bold",
+                }}
+              >
+                ⏹ Stop Speaking
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={!answer.trim()}
+                style={{
+                  padding: "12px 18px",
+                  border: "none",
+                  borderRadius: 8,
+                  background: !answer.trim() ? "#aaa" : "#222",
+                  color: "#fff",
+                  cursor: !answer.trim() ? "not-allowed" : "pointer",
+                  fontWeight: "bold",
+                }}
+              >
+                Submit Spoken Answer
+              </button>
+
+              <button
+                type="button"
+                onClick={handleHint}
+                style={{
+                  padding: "12px 18px",
+                  border: "none",
+                  borderRadius: 8,
+                  background: "#555",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontWeight: "bold",
+                }}
+              >
+                Show Hint
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showScore && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.65)",
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              padding: 20,
+            }}
+          >
+            <div
+              style={{
+                background: "#fff",
+                borderRadius: 14,
+                padding: 24,
+                width: 320,
+                textAlign: "center",
+              }}
+            >
+              <h2 style={{ marginTop: 0 }}>Score Card</h2>
+              <div style={{ fontSize: 42, marginBottom: 8 }}>
+                {getTrophy(score)}
+              </div>
+              <div style={{ fontSize: 34, marginBottom: 8 }}>
+                {getEmoji(score)}
+              </div>
+              <div style={{ fontSize: 26, fontWeight: "bold", marginBottom: 8 }}>
+                {score} / {TOTAL_TOPICS}
+              </div>
+              <p style={{ marginBottom: 16 }}>{getFeedback(score)}</p>
+              <button
+                onClick={() => window.location.reload()}
+                style={{
+                  padding: "10px 18px",
+                  border: "none",
+                  borderRadius: 8,
+                  background: "#222",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontWeight: "bold",
+                }}
+              >
+                Restart
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

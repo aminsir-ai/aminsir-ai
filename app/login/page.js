@@ -30,6 +30,7 @@ export default function LoginPage() {
       }
 
       localStorage.setItem("aminsir_user", JSON.stringify(data.student));
+      localStorage.setItem("aminsir_student_name", name);
       router.push("/chat");
     } catch (error) {
       setErr("Something went wrong");
@@ -40,12 +41,19 @@ export default function LoginPage() {
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
       <h2>Student Login</h2>
 
-      <form onSubmit={onLogin} style={{ display: "grid", gap: 12, maxWidth: 340 }}>
+      <form
+        onSubmit={onLogin}
+        style={{ display: "grid", gap: 12, maxWidth: 340 }}
+      >
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Student Name"
-          style={{ padding: 12, borderRadius: 10, border: "1px solid #ddd" }}
+          style={{
+            padding: 12,
+            borderRadius: 10,
+            border: "1px solid #ddd",
+          }}
         />
 
         <input
@@ -53,7 +61,11 @@ export default function LoginPage() {
           onChange={(e) => setPin(e.target.value)}
           placeholder="PIN"
           type="password"
-          style={{ padding: 12, borderRadius: 10, border: "1px solid #ddd" }}
+          style={{
+            padding: 12,
+            borderRadius: 10,
+            border: "1px solid #ddd",
+          }}
         />
 
         <button

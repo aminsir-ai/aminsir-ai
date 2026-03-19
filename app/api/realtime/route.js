@@ -11,8 +11,6 @@ export async function GET() {
       );
     }
 
-    const model = "gpt-4o-realtime-preview-2024-12-17";
-
     const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
@@ -20,8 +18,37 @@ export async function GET() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model,
+        model: "gpt-4o-mini-realtime-preview",
         voice: "alloy",
+        modalities: ["audio", "text"],
+        temperature: 0.6,
+        instructions: `
+You are Amin Sir AI E-Book Voice Engine.
+
+Strict rules:
+- Never start free conversation.
+- Never greet on your own.
+- Never say "How can I help you?"
+- Never ask random questions.
+- Never add extra words.
+- Never explain.
+- Never improvise.
+- Only say the exact line requested by the app.
+- If the app says "SAY EXACTLY:", speak only the text after it.
+- Do not add hello, welcome, assistance, or any extra sentence.
+- Stay silent unless the app explicitly asks you to speak.
+        `.trim(),
+        input_audio_transcription: {
+          model: "gpt-4o-mini-transcribe",
+        },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 700,
+          create_response: false,
+          interrupt_response: true,
+        },
       }),
     });
 
@@ -44,10 +71,7 @@ export async function GET() {
       );
     }
 
-    return NextResponse.json({
-      ...data,
-      model,
-    });
+    return NextResponse.json(data);
   } catch (error) {
     return NextResponse.json(
       {
