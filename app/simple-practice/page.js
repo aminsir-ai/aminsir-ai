@@ -156,9 +156,9 @@ export default function SimplePracticePage() {
   const [saveStatus, setSaveStatus] = useState("idle");
 
   const recognitionRef = useRef(null);
-  const transcriptRef = useRef("");
   const timerRef = useRef(null);
   const stoppedRef = useRef(false);
+  const processingRef = useRef(false);
   const currentAudioRef = useRef(null);
   const isAiSpeakingRef = useRef(false);
   const phaseRef = useRef("lesson");
@@ -215,7 +215,6 @@ export default function SimplePracticePage() {
         return false;
       }
 
-      console.log("Progress saved:", result);
       return true;
     } catch (error) {
       console.error("Save progress error:", error);
@@ -234,7 +233,9 @@ export default function SimplePracticePage() {
   useEffect(() => {
     const storedName =
       typeof window !== "undefined" ? localStorage.getItem("studentName") : null;
-    if (storedName) setStudentName(storedName);
+    if (storedName) {
+      setStudentName(storedName);
+    }
   }, []);
 
   useEffect(() => {
@@ -251,50 +252,77 @@ export default function SimplePracticePage() {
     if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
-    recognition.lang = "en-US";
-    recognition.interimResults = true;
+    recognition.lang = "en-IN";
+    recognition.interimResults = false;
     recognition.continuous = false;
+    recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       setIsListening(true);
-      transcriptRef.current = "";
     };
 
-    recognition.onresult = (event) => {
-      let text = "";
-      for (let i = 0; i < event.results.length; i += 1) {
-        text += `${event.results[i][0].transcript} `;
+    recognition.onresult = async (event) => {
+      if (stoppedRef.current || processingRef.current || endingSessionRef.current) {
+        return;
       }
-      transcriptRef.current = text.trim();
+
+      const text = event.results?.[0]?.[0]?.transcript?.trim();
+      if (!text) return;
+
+      processingRef.current = true;
+      stoppedRef.current = true;
+
+      try {
+        recognition.stop();
+      } catch {}
+
+      await handleStudentMessage(text);
     };
 
     recognition.onend = () => {
       setIsListening(false);
 
-      if (stoppedRef.current || endingSessionRef.current) return;
+      if (endingSessionRef.current) return;
 
-      const finalText = transcriptRef.current.trim();
-
-      if (finalText) {
-        handleStudentMessage(finalText);
-      } else {
-        setTimeout(() => {
-          if (
-            !isAiSpeakingRef.current &&
-            phaseRef.current === "practice" &&
-            !endingSessionRef.current
-          ) {
-            startListening();
-          }
-        }, 700);
+      if (stoppedRef.current) {
+        stoppedRef.current = false;
+        return;
       }
+
+      setTimeout(() => {
+        if (
+          phaseRef.current === "practice" &&
+          !isAiSpeakingRef.current &&
+          !processingRef.current &&
+          !endingSessionRef.current
+        ) {
+          startListening();
+        }
+      }, 80);
     };
 
     recognition.onerror = () => {
       setIsListening(false);
+
+      setTimeout(() => {
+        if (
+          phaseRef.current === "practice" &&
+          !isAiSpeakingRef.current &&
+          !processingRef.current &&
+          !endingSessionRef.current
+        ) {
+          startListening();
+        }
+      }, 120);
     };
 
     recognitionRef.current = recognition;
+
+    return () => {
+      try {
+        recognition.stop();
+      } catch {}
+    };
   }, []);
 
   useEffect(() => {
@@ -316,7 +344,17 @@ export default function SimplePracticePage() {
 
   async function speakText(text, onEnd) {
     try {
+      const plainText = String(text || "").trim();
+
+      if (!plainText) {
+        isAiSpeakingRef.current = false;
+        setVoiceStatus("idle");
+        if (onEnd) onEnd();
+        return;
+      }
+
       stopCurrentAudio();
+
       isAiSpeakingRef.current = true;
       setVoiceStatus("generating");
 
@@ -325,7 +363,7 @@ export default function SimplePracticePage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text: plainText }),
       });
 
       if (!res.ok) {
@@ -383,7 +421,7 @@ export default function SimplePracticePage() {
     setCurrentAiText(lessonSpeechLines[index]);
 
     speakText(lessonSpeechLines[index], () => {
-      setTimeout(() => listenLesson(index + 1), 250);
+      setTimeout(() => listenLesson(index + 1), 220);
     });
   }
 
@@ -401,22 +439,18 @@ export default function SimplePracticePage() {
     });
 
     const data = await res.json();
-    return data?.text || "Please say that again.";
+    return data?.text || "Good. Speak again.";
   }
 
   function startListening() {
-    if (
-      !recognitionRef.current ||
-      isListening ||
-      isAiSpeakingRef.current ||
-      phaseRef.current !== "practice" ||
-      endingSessionRef.current
-    ) {
-      return;
-    }
+    if (!recognitionRef.current) return;
+    if (isListening) return;
+    if (isAiSpeakingRef.current) return;
+    if (processingRef.current) return;
+    if (phaseRef.current !== "practice") return;
+    if (endingSessionRef.current) return;
 
     try {
-      stoppedRef.current = false;
       recognitionRef.current.start();
     } catch {}
   }
@@ -431,6 +465,9 @@ export default function SimplePracticePage() {
   async function startPractice() {
     stopLessonVoice();
     endingSessionRef.current = false;
+    processingRef.current = false;
+    stoppedRef.current = false;
+
     setPhase("practice");
     phaseRef.current = "practice";
     setConversation([]);
@@ -442,33 +479,56 @@ export default function SimplePracticePage() {
     setScore(null);
     setSaveStatus("idle");
 
-    const opening = await callAminSirApi({ mode: "opening" });
+    let opening = "";
+    try {
+      opening = await callAminSirApi({ mode: "opening" });
+    } catch {
+      opening = `Welcome ${studentName}. Say: English is a language.`;
+    }
+
     const nextConversation = [{ role: "assistant", content: opening }];
     setConversation(nextConversation);
     conversationRef.current = nextConversation;
     setCurrentAiText(opening);
 
     speakText(opening, () => {
-      setTimeout(() => startListening(), 500);
+      setTimeout(() => startListening(), 80);
     });
   }
 
   async function handleStudentMessage(text) {
-    if (endingSessionRef.current || phaseRef.current !== "practice") return;
+    if (endingSessionRef.current || phaseRef.current !== "practice") {
+      processingRef.current = false;
+      return;
+    }
+
+    const cleanedText = String(text || "").trim();
+
+    if (!cleanedText) {
+      processingRef.current = false;
+      setTimeout(() => startListening(), 80);
+      return;
+    }
 
     const updatedConversation = [
       ...conversationRef.current,
-      { role: "user", content: text },
+      { role: "user", content: cleanedText },
     ];
 
     setConversation(updatedConversation);
     conversationRef.current = updatedConversation;
 
-    const aiReply = await callAminSirApi({
-      mode: "reply",
-      message: text,
-      history: updatedConversation,
-    });
+    let aiReply = "Good. Speak again.";
+
+    try {
+      aiReply = await callAminSirApi({
+        mode: "reply",
+        message: cleanedText,
+        history: updatedConversation,
+      });
+    } catch {
+      aiReply = "Good. Speak again.";
+    }
 
     const nextConversation = [
       ...updatedConversation,
@@ -480,11 +540,12 @@ export default function SimplePracticePage() {
     setCurrentAiText(aiReply);
 
     speakText(aiReply, () => {
+      processingRef.current = false;
       setTimeout(() => {
         if (phaseRef.current === "practice" && !endingSessionRef.current) {
           startListening();
         }
-      }, 500);
+      }, 80);
     });
   }
 
@@ -554,7 +615,10 @@ export default function SimplePracticePage() {
     clearInterval(timerRef.current);
     stopListening();
     stopCurrentAudio();
+
     endingSessionRef.current = false;
+    processingRef.current = false;
+    stoppedRef.current = false;
 
     setPhase("lesson");
     phaseRef.current = "lesson";
