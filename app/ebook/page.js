@@ -14,7 +14,7 @@ const WORDS_OF_DAY = [
   { word: "remarkable", meaning: "lajawab / khaas" },
 ];
 
-const DAY1_SUPPORT_LINES = [
+const SUPPORT_LINES = [
   "English is a language.",
   "English has parts of speech.",
   "A house needs materials.",
@@ -38,27 +38,27 @@ function formatTime(seconds) {
 }
 
 function getFeedback(score) {
-  if (score >= 9) return "Excellent work!";
-  if (score >= 7) return "Very good!";
-  if (score >= 5) return "Good effort!";
+  if (score >= 90) return "Excellent work!";
+  if (score >= 75) return "Very good!";
+  if (score >= 60) return "Good effort!";
   return "Keep practicing!";
 }
 
 function getTrophy(score) {
-  if (score >= 9) return "🏆";
-  if (score >= 7) return "🥇";
-  if (score >= 5) return "🥈";
+  if (score >= 90) return "🏆";
+  if (score >= 75) return "🥇";
+  if (score >= 60) return "🥈";
   return "🥉";
 }
 
 function getEmoji(score) {
-  if (score >= 9) return "😄";
-  if (score >= 7) return "🙂";
-  if (score >= 5) return "😊";
+  if (score >= 90) return "😄";
+  if (score >= 75) return "🙂";
+  if (score >= 60) return "😊";
   return "😌";
 }
 
-function getStudentNameFromStorage(searchParams) {
+function getStudentName(searchParams) {
   const fromQuery =
     searchParams.get("studentName") ||
     searchParams.get("student") ||
@@ -83,7 +83,7 @@ function getStudentNameFromStorage(searchParams) {
   return "Student";
 }
 
-function getStudentIdFromStorage(searchParams, fallbackName) {
+function getStudentId(searchParams, fallbackName) {
   const fromQuery = searchParams.get("studentId") || searchParams.get("id");
 
   if (fromQuery?.trim()) return fromQuery.trim();
@@ -133,33 +133,18 @@ function getLightCorrection(answer) {
   return "";
 }
 
-function getConversationScore(conversation, elapsedSeconds) {
-  const studentTurns = conversation.filter((m) => m.role === "you").length;
-
-  const overall = Math.min(
-    55 + studentTurns * 6 + (elapsedSeconds >= 180 ? 10 : elapsedSeconds >= 90 ? 6 : 3),
-    95
-  );
-
-  return {
-    overall,
-    speaking: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
-    grammar: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
-    vocabulary: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
-    confidence: elapsedSeconds >= 180 ? 8 : 7,
-  };
-}
-
-function buildAiReply(answer, stage) {
+function buildReply(answer, stage, studentName) {
   const text = normalizeText(answer);
-  const wordCount = text.split(" ").filter(Boolean).length;
+  const words = text.split(" ").filter(Boolean);
+  const wordCount = words.length;
 
   if (stage === 0) {
     if (
       text.includes("parts of speech") ||
       text.includes("english is a language") ||
       text.includes("house") ||
-      text.includes("structure")
+      text.includes("structure") ||
+      text.includes("english")
     ) {
       return "Very good. Do you want to share something more about today's lesson, or do you want to talk about something else?";
     }
@@ -187,12 +172,14 @@ function buildAiReply(answer, stage) {
       text.includes("something else") ||
       text.includes("other topic") ||
       text.includes("another topic") ||
-      text.includes("talk something else") ||
       text.includes("different topic") ||
+      text.includes("talk something else") ||
       text.includes("my hobby") ||
-      text.includes("my day")
+      text.includes("my day") ||
+      text.includes("my family") ||
+      text.includes("my future")
     ) {
-      return "Sure. What would you like to talk about? You can speak about your day, your hobby, your goals, or anything you like.";
+      return "Sure. What would you like to talk about? You can speak about your day, your hobby, your family, your goals, or anything you like.";
     }
 
     if (wordCount <= 4) {
@@ -216,7 +203,7 @@ function buildAiReply(answer, stage) {
     }
 
     if (text.includes("house")) {
-      return "Excellent. Can you explain the house example in simple words again, but in a little more detail?";
+      return "Excellent. Can you explain the house example again in simple words, but with a little more detail?";
     }
 
     if (text.includes("parts of speech")) {
@@ -234,13 +221,18 @@ function buildAiReply(answer, stage) {
     text.includes("goal") ||
     text.includes("village") ||
     text.includes("job") ||
-    text.includes("school")
+    text.includes("school") ||
+    text.includes("study")
   ) {
     if (wordCount <= 5) {
       return "Good topic. Please tell me more in two or three full sentences.";
     }
 
     return "Very nice. Please continue. Why is this important to you?";
+  }
+
+  if (text.includes("hello") || text.includes("hi")) {
+    return `Hello ${studentName}. Please tell me something more. You can continue about today's lesson, or you can talk about something else.`;
   }
 
   if (wordCount <= 3) {
@@ -250,24 +242,43 @@ function buildAiReply(answer, stage) {
   return "Very good. Please continue. Tell me more.";
 }
 
+function getConversationScore(conversation, elapsedSeconds) {
+  const studentTurns = conversation.filter((m) => m.role === "you").length;
+
+  const overall = Math.min(
+    55 + studentTurns * 6 + (elapsedSeconds >= 180 ? 10 : elapsedSeconds >= 90 ? 6 : 3),
+    95
+  );
+
+  return {
+    overall,
+    speaking: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
+    grammar: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
+    vocabulary: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
+    confidence: elapsedSeconds >= 180 ? 8 : 7,
+  };
+}
+
 export default function EbookPracticePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   const inputRef = useRef(null);
-  const finishedRef = useRef(false);
-  const voicesRef = useRef([]);
   const recognitionRef = useRef(null);
+  const voicesRef = useRef([]);
+  const timerRef = useRef(null);
+  const finishedRef = useRef(false);
   const isListeningRef = useRef(false);
+  const isAiSpeakingRef = useRef(false);
+  const autoModeRef = useRef(false);
+  const processingRef = useRef(false);
   const stageRef = useRef(0);
+  const silenceTimerRef = useRef(null);
+  const latestAnswerRef = useRef("");
 
-  const studentName = useMemo(
-    () => getStudentNameFromStorage(searchParams),
-    [searchParams]
-  );
-
+  const studentName = useMemo(() => getStudentName(searchParams), [searchParams]);
   const studentId = useMemo(
-    () => getStudentIdFromStorage(searchParams, studentName),
+    () => getStudentId(searchParams, studentName),
     [searchParams, studentName]
   );
 
@@ -297,7 +308,7 @@ export default function EbookPracticePage() {
   useEffect(() => {
     if (!started || sessionEnded) return;
 
-    const timer = setInterval(() => {
+    timerRef.current = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
           stopSession(true);
@@ -307,7 +318,7 @@ export default function EbookPracticePage() {
       });
     }, 1000);
 
-    return () => clearInterval(timer);
+    return () => clearInterval(timerRef.current);
   }, [started, sessionEnded]);
 
   useEffect(() => {
@@ -358,39 +369,60 @@ export default function EbookPracticePage() {
       setStatus("Listening...");
     };
 
+    recognition.onresult = (event) => {
+      let merged = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        merged += `${event.results[i][0]?.transcript || ""} `;
+      }
+
+      const cleaned = merged.trim();
+
+      if (cleaned) {
+        latestAnswerRef.current = cleaned;
+        setAnswer(cleaned);
+
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+        }
+
+        silenceTimerRef.current = setTimeout(() => {
+          if (
+            autoModeRef.current &&
+            !processingRef.current &&
+            latestAnswerRef.current.trim()
+          ) {
+            processStudentAnswer(latestAnswerRef.current.trim());
+          }
+        }, 1800);
+      }
+    };
+
     recognition.onend = () => {
       isListeningRef.current = false;
       setIsListening(false);
-      if (started && !sessionEnded) {
-        setStatus("Waiting for answer");
+
+      if (!started || sessionEnded || finishedRef.current) return;
+
+      setStatus("Waiting for answer");
+
+      if (
+        autoModeRef.current &&
+        !processingRef.current &&
+        !isAiSpeakingRef.current &&
+        latestAnswerRef.current.trim()
+      ) {
+        processStudentAnswer(latestAnswerRef.current.trim());
       }
     };
 
     recognition.onerror = () => {
       isListeningRef.current = false;
       setIsListening(false);
-      if (started && !sessionEnded) {
-        setStatus("Speech error");
-      }
-    };
 
-    recognition.onresult = (event) => {
-      let finalText = "";
-      let interimText = "";
+      if (!started || sessionEnded || finishedRef.current) return;
 
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const transcript = event.results[i][0]?.transcript || "";
-        if (event.results[i].isFinal) {
-          finalText += transcript + " ";
-        } else {
-          interimText += transcript + " ";
-        }
-      }
-
-      const merged = `${finalText} ${interimText}`.trim();
-      if (merged) {
-        setAnswer(merged);
-      }
+      setStatus("Speech error");
     };
 
     recognitionRef.current = recognition;
@@ -441,8 +473,11 @@ export default function EbookPracticePage() {
     }
   }
 
-  function speakText(text) {
-    if (typeof window === "undefined" || !window.speechSynthesis || !text) return;
+  function speakText(text, onEnd) {
+    if (typeof window === "undefined" || !window.speechSynthesis || !text) {
+      if (onEnd) onEnd();
+      return;
+    }
 
     window.speechSynthesis.cancel();
 
@@ -463,24 +498,35 @@ export default function EbookPracticePage() {
     }
 
     utterance.onstart = () => {
+      isAiSpeakingRef.current = true;
       if (started && !sessionEnded) {
         setStatus("AI speaking");
       }
     };
 
     utterance.onend = () => {
-      if (started && !sessionEnded && !isListeningRef.current) {
+      isAiSpeakingRef.current = false;
+      if (started && !sessionEnded) {
         setStatus("Waiting for answer");
       }
+      if (onEnd) onEnd();
     };
 
     window.speechSynthesis.speak(utterance);
   }
 
   function startListening() {
-    if (!recognitionRef.current || isListeningRef.current) return;
+    if (
+      !recognitionRef.current ||
+      isListeningRef.current ||
+      isAiSpeakingRef.current ||
+      finishedRef.current
+    ) {
+      return;
+    }
 
     try {
+      latestAnswerRef.current = "";
       setAnswer("");
       recognitionRef.current.start();
     } catch {}
@@ -498,23 +544,41 @@ export default function EbookPracticePage() {
     setMessages((prev) => [...prev, { role, text }]);
   }
 
-  function addAiMessage(text, shouldSpeak = true) {
+  function addAiMessage(text, autoListen = false) {
     addMessage("ai", text);
     setCurrentPrompt(text);
-    if (shouldSpeak) {
-      speakText(text);
-    }
+
+    speakText(text, () => {
+      if (
+        autoListen &&
+        autoModeRef.current &&
+        !finishedRef.current &&
+        !sessionEnded
+      ) {
+        setTimeout(() => {
+          startListening();
+        }, 500);
+      }
+    });
   }
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (!started || sessionEnded) return;
+  async function processStudentAnswer(rawAnswer) {
+    if (processingRef.current || finishedRef.current) return;
 
-    const cleanAnswer = answer.trim();
+    const cleanAnswer = String(rawAnswer || "").trim();
     if (!cleanAnswer) return;
 
+    processingRef.current = true;
+
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+    }
+
     stopListening();
+
     addMessage("you", cleanAnswer);
+    setAnswer("");
+    latestAnswerRef.current = "";
 
     const correction = getLightCorrection(cleanAnswer);
 
@@ -522,16 +586,26 @@ export default function EbookPracticePage() {
       addMessage("system", correction);
       setLastResult("wrong");
       setStatus("Correction");
-      setAnswer("");
 
       setTimeout(() => {
         addAiMessage(correction, true);
-      }, 200);
+        processingRef.current = false;
+      }, 250);
 
       return;
     }
 
-    const nextAiReply = buildAiReply(cleanAnswer, stageRef.current);
+    const studentTurns = messages.filter((m) => m.role === "you").length + 1;
+
+    if (studentTurns >= 10) {
+      processingRef.current = false;
+      setTimeout(() => {
+        stopSession(true);
+      }, 300);
+      return;
+    }
+
+    const aiReply = buildReply(cleanAnswer, stageRef.current, studentName);
 
     setLastResult("correct");
     setStatus("Good");
@@ -540,18 +614,18 @@ export default function EbookPracticePage() {
       stageRef.current += 1;
     }
 
-    if (messages.filter((m) => m.role === "you").length >= 8) {
-      setTimeout(() => {
-        stopSession(true);
-      }, 300);
-      return;
-    }
-
-    setAnswer("");
-
     setTimeout(() => {
-      addAiMessage(nextAiReply, true);
-    }, 200);
+      addAiMessage(aiReply, true);
+      processingRef.current = false;
+    }, 250);
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!started || sessionEnded) return;
+    if (!answer.trim()) return;
+
+    processStudentAnswer(answer.trim());
   }
 
   function handleReplay() {
@@ -568,12 +642,15 @@ export default function EbookPracticePage() {
 
   function startSession() {
     finishedRef.current = false;
+    autoModeRef.current = true;
+    processingRef.current = false;
     stageRef.current = 0;
 
     setMessages([]);
     setScore(0);
     setTimeLeft(SESSION_TIME);
     setAnswer("");
+    latestAnswerRef.current = "";
     setCurrentPrompt("");
     setLastResult("");
     setShowScore(false);
@@ -592,6 +669,11 @@ export default function EbookPracticePage() {
   async function stopSession(showPopup = true) {
     if (finishedRef.current) return;
     finishedRef.current = true;
+    autoModeRef.current = false;
+
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+    }
 
     stopListening();
     setStarted(false);
@@ -603,10 +685,12 @@ export default function EbookPracticePage() {
     const conversationForScore = [...messages];
     const finalScoreObj = getConversationScore(conversationForScore, elapsedSeconds);
 
-    addAiMessage(`Very good, ${studentName}. You spoke well today. Keep practicing every day.`);
-
     setScore(finalScoreObj.overall);
     setSaveStatus("saving");
+
+    const closingText = `Very good, ${studentName}. You spoke well today. Keep practicing every day.`;
+    addMessage("ai", closingText);
+    speakText(closingText);
 
     const saved = await saveChatProgress({
       studentId:
@@ -633,10 +717,8 @@ export default function EbookPracticePage() {
     window.location.reload();
   }
 
-  const progressPercent = Math.min(
-    Math.round((messages.filter((m) => m.role === "you").length / 10) * 100),
-    100
-  );
+  const studentTurns = messages.filter((m) => m.role === "you").length;
+  const progressPercent = Math.min(Math.round((studentTurns / 10) * 100), 100);
 
   return (
     <div
@@ -713,7 +795,7 @@ export default function EbookPracticePage() {
           >
             <div style={{ fontSize: 13, color: "#666" }}>Progress</div>
             <div style={{ fontSize: 24, fontWeight: "bold" }}>
-              📊 {messages.filter((m) => m.role === "you").length} / 10
+              📊 {studentTurns} / 10
             </div>
           </div>
 
@@ -761,7 +843,8 @@ export default function EbookPracticePage() {
           }}
         >
           <div style={{ marginBottom: 10, fontSize: 14, color: "#666" }}>
-            Topic: <b>Day 1 Ebook Recall</b> | Type: <b>Student-led Conversation</b> | Category: <b>Fluency Practice</b>
+            Topic: <b>Day 1 Ebook Recall</b> | Type: <b>Student-led Conversation</b> | Category:{" "}
+            <b>Fluency Practice</b>
           </div>
 
           <div
@@ -941,7 +1024,7 @@ export default function EbookPracticePage() {
           </div>
 
           <div style={{ display: "grid", gap: 10 }}>
-            {DAY1_SUPPORT_LINES.map((line) => (
+            {SUPPORT_LINES.map((line) => (
               <div
                 key={line}
                 style={{
@@ -967,14 +1050,15 @@ export default function EbookPracticePage() {
               boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
             }}
           >
-            <div style={{ marginBottom: 10, fontWeight: "bold" }}>
-              Your Answer
-            </div>
+            <div style={{ marginBottom: 10, fontWeight: "bold" }}>Your Answer</div>
 
             <textarea
               ref={inputRef}
               value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
+              onChange={(e) => {
+                setAnswer(e.target.value);
+                latestAnswerRef.current = e.target.value;
+              }}
               placeholder="Speak or type your answer here"
               rows={3}
               style={{
@@ -1093,7 +1177,7 @@ export default function EbookPracticePage() {
               <div style={{ fontSize: 26, fontWeight: "bold", marginBottom: 8 }}>
                 {score} / 100
               </div>
-              <p style={{ marginBottom: 12 }}>{getFeedback(score / 10)}</p>
+              <p style={{ marginBottom: 12 }}>{getFeedback(score)}</p>
 
               <p style={{ marginBottom: 16, fontSize: 13, color: "#555" }}>
                 {saveStatus === "saving" && "Saving progress..."}
