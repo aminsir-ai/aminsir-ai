@@ -4,8 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 const SESSION_TIME = 600;
-const TOTAL_TOPICS = 10;
-const PATTERNS = ["affirmative", "negative", "question", "exclamatory"];
+const LESSON_NAME = "Amin Sir AI E-Book Practice";
 
 const WORDS_OF_DAY = [
   { word: "magnificent", meaning: "bahut shandaar" },
@@ -15,94 +14,14 @@ const WORDS_OF_DAY = [
   { word: "remarkable", meaning: "lajawab / khaas" },
 ];
 
-const NOUN_ITEMS = [
-  {
-    type: "noun",
-    label: "book",
-    affirmative: "This is my book.",
-    negative: "This is not my book.",
-    question: "Is this your book?",
-    exclamatory: "What a beautiful book!",
-  },
-  {
-    type: "noun",
-    label: "pen",
-    affirmative: "This is my pen.",
-    negative: "This is not my pen.",
-    question: "Is this your pen?",
-    exclamatory: "What a beautiful pen!",
-  },
-  {
-    type: "noun",
-    label: "car",
-    affirmative: "This is my car.",
-    negative: "This is not my car.",
-    question: "Is this your car?",
-    exclamatory: "What a beautiful car!",
-  },
-  {
-    type: "noun",
-    label: "teacher",
-    affirmative: "This is my teacher.",
-    negative: "This is not my teacher.",
-    question: "Is this your teacher?",
-    exclamatory: "What a great teacher!",
-  },
-  {
-    type: "noun",
-    label: "student",
-    affirmative: "This is my student.",
-    negative: "This is not my student.",
-    question: "Is this your student?",
-    exclamatory: "What a smart student!",
-  },
+const DAY1_SUPPORT_LINES = [
+  "English is a language.",
+  "English has parts of speech.",
+  "A house needs materials.",
+  "English also needs structure.",
+  "Parts of speech are important in English.",
+  "I want to improve my fluency.",
 ];
-
-const PRONOUN_ITEMS = [
-  {
-    type: "pronoun",
-    label: "I",
-    affirmative: "I am ready.",
-    negative: "I am not ready.",
-    question: "Am I ready?",
-    exclamatory: "How ready I am!",
-  },
-  {
-    type: "pronoun",
-    label: "you",
-    affirmative: "You are my friend.",
-    negative: "You are not late.",
-    question: "Are you my friend?",
-    exclamatory: "How kind you are!",
-  },
-  {
-    type: "pronoun",
-    label: "he",
-    affirmative: "He is my brother.",
-    negative: "He is not weak.",
-    question: "Is he my brother?",
-    exclamatory: "How strong he is!",
-  },
-  {
-    type: "pronoun",
-    label: "she",
-    affirmative: "She is my sister.",
-    negative: "She is not sad.",
-    question: "Is she my sister?",
-    exclamatory: "How smart she is!",
-  },
-  {
-    type: "pronoun",
-    label: "we",
-    affirmative: "We are students.",
-    negative: "We are not tired.",
-    question: "Are we students?",
-    exclamatory: "How happy we are!",
-  },
-];
-
-const LESSON_ITEMS = [...NOUN_ITEMS, ...PRONOUN_ITEMS];
-const LESSON_NAME = "Amin Sir AI E-Book Practice";
 
 function normalizeText(text) {
   return String(text || "")
@@ -112,29 +31,10 @@ function normalizeText(text) {
     .trim();
 }
 
-function tokenize(text) {
-  return normalizeText(text).split(" ").filter(Boolean);
-}
-
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function exactishMatch(expected, actual) {
-  const e = tokenize(expected);
-  const a = tokenize(actual);
-
-  if (normalizeText(expected) === normalizeText(actual)) return true;
-  if (e.length !== a.length) return false;
-
-  let same = 0;
-  for (let i = 0; i < e.length; i += 1) {
-    if (e[i] === a[i]) same += 1;
-  }
-
-  return same / e.length >= 0.85;
 }
 
 function getFeedback(score) {
@@ -158,75 +58,218 @@ function getEmoji(score) {
   return "😌";
 }
 
-function getPatternLabel(pattern) {
-  if (pattern === "affirmative") return "Affirmative";
-  if (pattern === "negative") return "Negative";
-  if (pattern === "question") return "Question";
-  if (pattern === "exclamatory") return "Exclamatory";
+function getStudentNameFromStorage(searchParams) {
+  const fromQuery =
+    searchParams.get("studentName") ||
+    searchParams.get("student") ||
+    searchParams.get("name");
+
+  if (fromQuery?.trim()) return fromQuery.trim();
+
+  if (typeof window !== "undefined") {
+    try {
+      const rawStudent = localStorage.getItem("student");
+      const storedName = localStorage.getItem("studentName");
+
+      if (rawStudent) {
+        const parsed = JSON.parse(rawStudent);
+        if (parsed?.name) return String(parsed.name).trim();
+      }
+
+      if (storedName) return String(storedName).trim();
+    } catch {}
+  }
+
+  return "Student";
+}
+
+function getStudentIdFromStorage(searchParams, fallbackName) {
+  const fromQuery = searchParams.get("studentId") || searchParams.get("id");
+
+  if (fromQuery?.trim()) return fromQuery.trim();
+
+  if (typeof window !== "undefined") {
+    try {
+      const rawStudent = localStorage.getItem("student");
+      const storedId = localStorage.getItem("studentId");
+
+      if (rawStudent) {
+        const parsed = JSON.parse(rawStudent);
+        if (parsed?.id) return String(parsed.id).trim();
+        if (parsed?.studentId) return String(parsed.studentId).trim();
+      }
+
+      if (storedId) return String(storedId).trim();
+    } catch {}
+  }
+
+  return String(fallbackName || "student")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+function getLightCorrection(answer) {
+  const text = normalizeText(answer);
+
+  if (!text) return "";
+
+  if (text.includes("english are")) {
+    return "Good try. Say: English is a language.";
+  }
+
+  if (text.includes("house need materials")) {
+    return "Good try. Say: A house needs materials.";
+  }
+
+  if (text.includes("english need structure")) {
+    return "Good try. Say: English needs structure.";
+  }
+
+  if (text.includes("parts of speech is")) {
+    return "Good try. Say: Parts of speech are important.";
+  }
+
   return "";
 }
 
-export default function ChatPage() {
+function getConversationScore(conversation, elapsedSeconds) {
+  const studentTurns = conversation.filter((m) => m.role === "you").length;
+
+  const overall = Math.min(
+    55 + studentTurns * 6 + (elapsedSeconds >= 180 ? 10 : elapsedSeconds >= 90 ? 6 : 3),
+    95
+  );
+
+  return {
+    overall,
+    speaking: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
+    grammar: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
+    vocabulary: studentTurns >= 6 ? 8 : studentTurns >= 4 ? 7 : 6,
+    confidence: elapsedSeconds >= 180 ? 8 : 7,
+  };
+}
+
+function buildAiReply(answer, stage) {
+  const text = normalizeText(answer);
+  const wordCount = text.split(" ").filter(Boolean).length;
+
+  if (stage === 0) {
+    if (
+      text.includes("parts of speech") ||
+      text.includes("english is a language") ||
+      text.includes("house") ||
+      text.includes("structure")
+    ) {
+      return "Very good. Do you want to share something more about today's lesson, or do you want to talk about something else?";
+    }
+
+    if (wordCount <= 3) {
+      return "Good start. Please tell me a little more about what you learned today in the ebook.";
+    }
+
+    return "Good. Do you want to share something more about today's lesson, or do you want to talk about something else?";
+  }
+
+  if (stage === 1) {
+    if (
+      text.includes("lesson") ||
+      text.includes("today lesson") ||
+      text.includes("parts of speech") ||
+      text.includes("house") ||
+      text.includes("ebook") ||
+      text.includes("english")
+    ) {
+      return "Very nice. Then tell me, what do you understand by parts of speech, and why are they important?";
+    }
+
+    if (
+      text.includes("something else") ||
+      text.includes("other topic") ||
+      text.includes("another topic") ||
+      text.includes("talk something else") ||
+      text.includes("different topic") ||
+      text.includes("my hobby") ||
+      text.includes("my day")
+    ) {
+      return "Sure. What would you like to talk about? You can speak about your day, your hobby, your goals, or anything you like.";
+    }
+
+    if (wordCount <= 4) {
+      return "Please choose one. Do you want to continue about today's lesson, or do you want to talk about something else?";
+    }
+
+    return "Good. Please continue in your own way. I am listening.";
+  }
+
+  if (
+    text.includes("parts of speech") ||
+    text.includes("noun") ||
+    text.includes("pronoun") ||
+    text.includes("verb") ||
+    text.includes("house") ||
+    text.includes("structure") ||
+    text.includes("english")
+  ) {
+    if (wordCount <= 5) {
+      return "Good. Please explain a little more in full sentences.";
+    }
+
+    if (text.includes("house")) {
+      return "Excellent. Can you explain the house example in simple words again, but in a little more detail?";
+    }
+
+    if (text.includes("parts of speech")) {
+      return "Very good. Can you name some parts of speech and tell me why they help us make sentences?";
+    }
+
+    return "Nice answer. Please continue. What part of today's lesson did you like most?";
+  }
+
+  if (
+    text.includes("hobby") ||
+    text.includes("day") ||
+    text.includes("family") ||
+    text.includes("future") ||
+    text.includes("goal") ||
+    text.includes("village") ||
+    text.includes("job") ||
+    text.includes("school")
+  ) {
+    if (wordCount <= 5) {
+      return "Good topic. Please tell me more in two or three full sentences.";
+    }
+
+    return "Very nice. Please continue. Why is this important to you?";
+  }
+
+  if (wordCount <= 3) {
+    return "Good. Please speak a little more. Try to answer in a full sentence.";
+  }
+
+  return "Very good. Please continue. Tell me more.";
+}
+
+export default function EbookPracticePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+
   const inputRef = useRef(null);
-  const topicIndexRef = useRef(0);
-  const patternIndexRef = useRef(0);
-  const wrongCountRef = useRef(0);
   const finishedRef = useRef(false);
   const voicesRef = useRef([]);
   const recognitionRef = useRef(null);
   const isListeningRef = useRef(false);
+  const stageRef = useRef(0);
 
-  const studentName = useMemo(() => {
-    const fromQuery =
-      searchParams.get("studentName") ||
-      searchParams.get("student") ||
-      searchParams.get("name");
+  const studentName = useMemo(
+    () => getStudentNameFromStorage(searchParams),
+    [searchParams]
+  );
 
-    if (fromQuery?.trim()) return fromQuery.trim();
-
-    if (typeof window !== "undefined") {
-      try {
-        const rawStudent = localStorage.getItem("student");
-        const storedName = localStorage.getItem("studentName");
-
-        if (rawStudent) {
-          const parsed = JSON.parse(rawStudent);
-          if (parsed?.name) return String(parsed.name).trim();
-        }
-
-        if (storedName) return String(storedName).trim();
-      } catch {}
-    }
-
-    return "Student";
-  }, [searchParams]);
-
-  const studentId = useMemo(() => {
-    const fromQuery =
-      searchParams.get("studentId") ||
-      searchParams.get("id");
-
-    if (fromQuery?.trim()) return fromQuery.trim();
-
-    if (typeof window !== "undefined") {
-      try {
-        const rawStudent = localStorage.getItem("student");
-        const storedId = localStorage.getItem("studentId");
-
-        if (rawStudent) {
-          const parsed = JSON.parse(rawStudent);
-          if (parsed?.id) return String(parsed.id).trim();
-          if (parsed?.studentId) return String(parsed.studentId).trim();
-        }
-
-        if (storedId) return String(storedId).trim();
-      } catch {}
-    }
-
-    return studentName.trim().toLowerCase().replace(/\s+/g, "_");
-  }, [searchParams, studentName]);
+  const studentId = useMemo(
+    () => getStudentIdFromStorage(searchParams, studentName),
+    [searchParams, studentName]
+  );
 
   const [started, setStarted] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
@@ -238,12 +281,8 @@ export default function ChatPage() {
   const [wordOfDay, setWordOfDay] = useState({ word: "", meaning: "" });
   const [saveStatus, setSaveStatus] = useState("idle");
 
-  const [topicIndex, setTopicIndex] = useState(0);
-  const [patternIndex, setPatternIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [currentPrompt, setCurrentPrompt] = useState("");
-  const [currentTopicName, setCurrentTopicName] = useState("");
-  const [currentTopicType, setCurrentTopicType] = useState("");
   const [lastResult, setLastResult] = useState("");
   const [voiceReady, setVoiceReady] = useState(false);
   const [speechReady, setSpeechReady] = useState(false);
@@ -275,7 +314,7 @@ export default function ChatPage() {
     if (started && !sessionEnded && inputRef.current) {
       inputRef.current.focus();
     }
-  }, [started, sessionEnded, topicIndex, patternIndex, lastResult, answer]);
+  }, [started, sessionEnded, answer, lastResult]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
@@ -461,81 +500,13 @@ export default function ChatPage() {
 
   function addAiMessage(text, shouldSpeak = true) {
     addMessage("ai", text);
+    setCurrentPrompt(text);
     if (shouldSpeak) {
       speakText(text);
     }
   }
 
-  function getCurrentItem() {
-    return LESSON_ITEMS[topicIndexRef.current];
-  }
-
-  function getCurrentPattern() {
-    return PATTERNS[patternIndexRef.current];
-  }
-
-  function getCurrentSentence() {
-    const item = getCurrentItem();
-    const pattern = getCurrentPattern();
-    return item?.[pattern] || "";
-  }
-
-  function presentCurrentItem() {
-    const item = getCurrentItem();
-    const sentence = getCurrentSentence();
-    const pattern = getCurrentPattern();
-
-    setTopicIndex(topicIndexRef.current);
-    setPatternIndex(patternIndexRef.current);
-    setCurrentPrompt(sentence);
-    setCurrentTopicName(item.label);
-    setCurrentTopicType(item.type);
-    setLastResult("");
-    setAnswer("");
-
-    if (item.type === "noun") {
-      addAiMessage(
-        `Aaj ka noun hai ${item.label}. ${getPatternLabel(
-          pattern
-        )} sentence English mein bolo. ${sentence}`
-      );
-    } else {
-      addAiMessage(
-        `Aaj ka pronoun hai ${item.label}. ${getPatternLabel(
-          pattern
-        )} sentence English mein bolo. ${sentence}`
-      );
-    }
-
-    setStatus("Waiting for answer");
-  }
-
-  function moveToNextItem() {
-    const isLastPattern = patternIndexRef.current >= PATTERNS.length - 1;
-    const isLastTopic = topicIndexRef.current >= LESSON_ITEMS.length - 1;
-
-    if (isLastPattern) {
-      setScore((prev) => Math.min(prev + 1, TOTAL_TOPICS));
-    }
-
-    if (isLastPattern && isLastTopic) {
-      stopSession(true);
-      return;
-    }
-
-    if (isLastPattern) {
-      topicIndexRef.current += 1;
-      patternIndexRef.current = 0;
-    } else {
-      patternIndexRef.current += 1;
-    }
-
-    wrongCountRef.current = 0;
-    setAnswer("");
-    presentCurrentItem();
-  }
-
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
     if (!started || sessionEnded) return;
 
@@ -545,41 +516,42 @@ export default function ChatPage() {
     stopListening();
     addMessage("you", cleanAnswer);
 
-    const expected = getCurrentSentence();
-    const correct = exactishMatch(expected, cleanAnswer);
+    const correction = getLightCorrection(cleanAnswer);
 
-    if (correct) {
-      const okText = "Very good. Ab dusra.";
-      addMessage("system", okText);
-      speakText(okText);
-      setStatus("Correct");
-      setLastResult("correct");
-      moveToNextItem();
+    if (correction) {
+      addMessage("system", correction);
+      setLastResult("wrong");
+      setStatus("Correction");
+      setAnswer("");
+
+      setTimeout(() => {
+        addAiMessage(correction, true);
+      }, 200);
+
       return;
     }
 
-    wrongCountRef.current += 1;
+    const nextAiReply = buildAiReply(cleanAnswer, stageRef.current);
 
-    if (wrongCountRef.current >= 2) {
-      const hintText = `Try this way: ${expected}`;
-      addMessage("system", hintText);
-      speakText(hintText);
-    } else {
-      addMessage("system", "Try again.");
-      speakText("Try again.");
+    setLastResult("correct");
+    setStatus("Good");
+
+    if (stageRef.current < 2) {
+      stageRef.current += 1;
     }
 
-    setStatus("Try again");
-    setLastResult("wrong");
-    setAnswer("");
-  }
+    if (messages.filter((m) => m.role === "you").length >= 8) {
+      setTimeout(() => {
+        stopSession(true);
+      }, 300);
+      return;
+    }
 
-  function handleHint() {
-    if (!started || sessionEnded) return;
-    const expected = getCurrentSentence();
-    const hintText = `Hint: ${expected}`;
-    addMessage("system", hintText);
-    speakText(expected);
+    setAnswer("");
+
+    setTimeout(() => {
+      addAiMessage(nextAiReply, true);
+    }, 200);
   }
 
   function handleReplay() {
@@ -587,21 +559,22 @@ export default function ChatPage() {
     speakText(currentPrompt);
   }
 
+  function handleHint() {
+    const hintText =
+      "You can say: I learned that English is a language and it has parts of speech.";
+    addMessage("system", hintText);
+    speakText(hintText);
+  }
+
   function startSession() {
-    topicIndexRef.current = 0;
-    patternIndexRef.current = 0;
-    wrongCountRef.current = 0;
     finishedRef.current = false;
+    stageRef.current = 0;
 
     setMessages([]);
     setScore(0);
     setTimeLeft(SESSION_TIME);
-    setTopicIndex(0);
-    setPatternIndex(0);
     setAnswer("");
     setCurrentPrompt("");
-    setCurrentTopicName("");
-    setCurrentTopicType("");
     setLastResult("");
     setShowScore(false);
     setSessionEnded(false);
@@ -609,12 +582,11 @@ export default function ChatPage() {
     setStatus("Lesson started");
     setSaveStatus("idle");
 
-    const welcomeText = `Welcome, ${studentName}. Aaj hamara lesson Noun aur Pronoun hai. Main aapko word dunga. Aapko English mein bolna hai. Speech box mein aapka jawab aa jayega. Sahi hua to very good. Galat hua to try again. Do baar galat hua to main sentence sikhaunga.`;
-    addAiMessage(welcomeText);
+    const openingText = `Welcome, ${studentName}. What did you learn today in the ebook?`;
 
     setTimeout(() => {
-      presentCurrentItem();
-    }, 400);
+      addAiMessage(openingText, true);
+    }, 250);
   }
 
   async function stopSession(showPopup = true) {
@@ -626,20 +598,24 @@ export default function ChatPage() {
     setSessionEnded(true);
     setStatus("Session ended");
     setCurrentPrompt("");
-    addAiMessage("Excellent work. Keep practicing.");
 
-    const timeSpentSeconds = Math.max(SESSION_TIME - timeLeft, 0);
+    const elapsedSeconds = Math.max(SESSION_TIME - timeLeft, 0);
+    const conversationForScore = [...messages];
+    const finalScoreObj = getConversationScore(conversationForScore, elapsedSeconds);
+
+    addAiMessage(`Very good, ${studentName}. You spoke well today. Keep practicing every day.`);
+
+    setScore(finalScoreObj.overall);
     setSaveStatus("saving");
 
     const saved = await saveChatProgress({
       studentId:
-        studentId ||
-        studentName.trim().toLowerCase().replace(/\s+/g, "_"),
+        studentId || studentName.trim().toLowerCase().replace(/\s+/g, "_"),
       studentName: studentName || "Student",
       lessonName: LESSON_NAME,
-      score,
-      totalTopics: TOTAL_TOPICS,
-      timeSpentSeconds,
+      score: finalScoreObj.overall,
+      totalTopics: 10,
+      timeSpentSeconds: elapsedSeconds,
     });
 
     setSaveStatus(saved ? "saved" : "error");
@@ -653,7 +629,14 @@ export default function ChatPage() {
     router.push("/student/progress");
   }
 
-  const progressPercent = Math.round((score / TOTAL_TOPICS) * 100);
+  function restartPage() {
+    window.location.reload();
+  }
+
+  const progressPercent = Math.min(
+    Math.round((messages.filter((m) => m.role === "you").length / 10) * 100),
+    100
+  );
 
   return (
     <div
@@ -730,7 +713,7 @@ export default function ChatPage() {
           >
             <div style={{ fontSize: 13, color: "#666" }}>Progress</div>
             <div style={{ fontSize: 24, fontWeight: "bold" }}>
-              📊 {score} / {TOTAL_TOPICS}
+              📊 {messages.filter((m) => m.role === "you").length} / 10
             </div>
           </div>
 
@@ -778,9 +761,7 @@ export default function ChatPage() {
           }}
         >
           <div style={{ marginBottom: 10, fontSize: 14, color: "#666" }}>
-            Topic: <b>{currentTopicName || "-"}</b> | Type:{" "}
-            <b>{getPatternLabel(PATTERNS[patternIndex]) || "-"}</b> | Category:{" "}
-            <b>{currentTopicType || "-"}</b>
+            Topic: <b>Day 1 Ebook Recall</b> | Type: <b>Student-led Conversation</b> | Category: <b>Fluency Practice</b>
           </div>
 
           <div
@@ -818,7 +799,7 @@ export default function ChatPage() {
             }}
           >
             <div style={{ fontSize: 14, color: "#666", marginBottom: 10 }}>
-              Main Practice Sentence
+              Current AI Prompt
             </div>
             <div
               style={{
@@ -846,7 +827,7 @@ export default function ChatPage() {
                 fontWeight: "bold",
               }}
             >
-              🔊 Replay Sentence
+              🔊 Replay Prompt
             </button>
           </div>
         </div>
@@ -946,6 +927,37 @@ export default function ChatPage() {
           </div>
         </div>
 
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: 14,
+            padding: 16,
+            marginBottom: 16,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+          }}
+        >
+          <div style={{ fontSize: 16, fontWeight: "bold", marginBottom: 12 }}>
+            Day 1 Support Sentences
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {DAY1_SUPPORT_LINES.map((line) => (
+              <div
+                key={line}
+                style={{
+                  border: "1px solid #e5e7ef",
+                  borderRadius: 10,
+                  padding: 12,
+                  background: "#fafbff",
+                  color: "#222",
+                }}
+              >
+                {line}
+              </div>
+            ))}
+          </div>
+        </div>
+
         {started && !sessionEnded && (
           <div
             style={{
@@ -963,7 +975,7 @@ export default function ChatPage() {
               ref={inputRef}
               value={answer}
               onChange={(e) => setAnswer(e.target.value)}
-              placeholder="Speak or type your English sentence here"
+              placeholder="Speak or type your answer here"
               rows={3}
               style={{
                 width: "100%",
@@ -1079,9 +1091,9 @@ export default function ChatPage() {
                 {getEmoji(score)}
               </div>
               <div style={{ fontSize: 26, fontWeight: "bold", marginBottom: 8 }}>
-                {score} / {TOTAL_TOPICS}
+                {score} / 100
               </div>
-              <p style={{ marginBottom: 12 }}>{getFeedback(score)}</p>
+              <p style={{ marginBottom: 12 }}>{getFeedback(score / 10)}</p>
 
               <p style={{ marginBottom: 16, fontSize: 13, color: "#555" }}>
                 {saveStatus === "saving" && "Saving progress..."}
@@ -1098,7 +1110,7 @@ export default function ChatPage() {
                 }}
               >
                 <button
-                  onClick={() => window.location.reload()}
+                  onClick={restartPage}
                   style={{
                     padding: "10px 18px",
                     border: "none",
