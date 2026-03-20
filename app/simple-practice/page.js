@@ -160,6 +160,13 @@ export default function SimplePracticePage() {
   const [saveStatus, setSaveStatus] = useState("idle");
   const [authChecked, setAuthChecked] = useState(false);
 
+  const [dailyLimitSeconds, setDailyLimitSeconds] = useState(15 * 60);
+  const [usedSecondsToday, setUsedSecondsToday] = useState(0);
+  const [remainingSecondsToday, setRemainingSecondsToday] = useState(15 * 60);
+  const [dailyBlocked, setDailyBlocked] = useState(false);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyMessage, setDailyMessage] = useState("");
+
   const recognitionRef = useRef(null);
   const timerRef = useRef(null);
   const stoppedRef = useRef(false);
@@ -169,6 +176,7 @@ export default function SimplePracticePage() {
   const phaseRef = useRef("lesson");
   const conversationRef = useRef([]);
   const endingSessionRef = useRef(false);
+  const sessionCapRef = useRef(10 * 60);
 
   const lessonSpeechLines = useMemo(
     () => [...LESSON.content, ...LESSON.parts, LESSON.closing],
@@ -176,6 +184,43 @@ export default function SimplePracticePage() {
   );
 
   const scoreMeta = score ? getScoreCardMeta(score.overall) : null;
+
+  async function fetchDailyLimit(currentStudentId) {
+    if (!currentStudentId) return;
+
+    setDailyLoading(true);
+    setDailyMessage("");
+
+    try {
+      const response = await fetch("/api/daily-limit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          studentId: String(currentStudentId),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setDailyMessage(data?.error || "Unable to load daily limit.");
+        setDailyLoading(false);
+        return;
+      }
+
+      setDailyLimitSeconds(Number(data.dailyLimitSeconds || 15 * 60));
+      setUsedSecondsToday(Number(data.usedSecondsToday || 0));
+      setRemainingSecondsToday(Number(data.remainingSeconds || 0));
+      setDailyBlocked(Boolean(data.blocked));
+    } catch (error) {
+      console.error("Daily limit fetch error:", error);
+      setDailyMessage("Unable to load daily limit.");
+    } finally {
+      setDailyLoading(false);
+    }
+  }
 
   async function saveProgressToSupabase({
     studentId,
@@ -270,11 +315,19 @@ export default function SimplePracticePage() {
       setStudentName(finalName);
       setStudentId(finalId);
       setAuthChecked(true);
+
+      if (finalId) {
+        fetchDailyLimit(finalId);
+      }
     } catch {
       if (storedName) {
         setStudentName(storedName);
         setStudentId(String(storedId || ""));
         setAuthChecked(true);
+
+        if (storedId) {
+          fetchDailyLimit(String(storedId));
+        }
       } else {
         router.replace("/login");
       }
@@ -500,21 +553,43 @@ export default function SimplePracticePage() {
   }
 
   async function startPractice() {
+    if (!studentId) {
+      setDailyMessage("Student not found. Please login again.");
+      return;
+    }
+
+    await fetchDailyLimit(studentId);
+
+    if (remainingSecondsToday <= 0 || dailyBlocked) {
+      setDailyMessage("Your 15-minute daily practice limit is finished for today.");
+      return;
+    }
+
     stopLessonVoice();
     endingSessionRef.current = false;
     processingRef.current = false;
     stoppedRef.current = false;
+
+    const allowedSeconds = Math.min(Number(remainingSecondsToday || 0), 10 * 60);
+
+    if (allowedSeconds <= 0) {
+      setDailyMessage("Your 15-minute daily practice limit is finished for today.");
+      return;
+    }
+
+    sessionCapRef.current = allowedSeconds;
 
     setPhase("practice");
     phaseRef.current = "practice";
     setConversation([]);
     conversationRef.current = [];
     setCurrentAiText("");
-    setTimeLeft(10 * 60);
+    setTimeLeft(allowedSeconds);
     setTimerRunning(true);
     setShowScoreCard(false);
     setScore(null);
     setSaveStatus("idle");
+    setDailyMessage("");
 
     let opening = "";
     try {
@@ -595,7 +670,8 @@ export default function SimplePracticePage() {
     stopCurrentAudio();
 
     const liveConversation = conversationRef.current;
-    const elapsedSeconds = 10 * 60 - timeLeft;
+    const sessionCap = Number(sessionCapRef.current || 0);
+    const elapsedSeconds = Math.max(sessionCap - timeLeft, 0);
     const finalScore = simpleScore(liveConversation, elapsedSeconds);
     const closing = `Great job today, ${studentName}. Keep practicing every day.`;
 
@@ -648,6 +724,10 @@ export default function SimplePracticePage() {
     });
 
     setSaveStatus(saved ? "saved" : "error");
+
+    if (studentId) {
+      await fetchDailyLimit(studentId);
+    }
   }
 
   function restart() {
@@ -708,10 +788,38 @@ export default function SimplePracticePage() {
             </button>
           </div>
 
-          <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
-            <p className="text-sm text-slate-400">Logged in as</p>
-            <p className="mt-1 text-lg font-semibold text-white">{studentName}</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
+              <p className="text-sm text-slate-400">Logged in as</p>
+              <p className="mt-1 text-lg font-semibold text-white">{studentName}</p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
+              <p className="text-sm text-slate-400">Used today</p>
+              <p className="mt-1 text-lg font-semibold text-white">
+                {dailyLoading ? "Loading..." : formatTime(usedSecondsToday)}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
+              <p className="text-sm text-slate-400">Remaining today</p>
+              <p className="mt-1 text-lg font-semibold text-white">
+                {dailyLoading ? "Loading..." : formatTime(remainingSecondsToday)}
+              </p>
+            </div>
           </div>
+
+          {dailyBlocked ? (
+            <div className="mt-4 rounded-2xl border border-red-800 bg-red-950/30 px-4 py-3 text-sm text-red-300">
+              Your 15-minute daily practice limit is finished for today.
+            </div>
+          ) : null}
+
+          {dailyMessage ? (
+            <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-200">
+              {dailyMessage}
+            </div>
+          ) : null}
         </div>
 
         {phase === "lesson" && (
@@ -775,7 +883,8 @@ export default function SimplePracticePage() {
 
                 <button
                   onClick={startPractice}
-                  className="mt-6 w-full rounded-2xl bg-white px-4 py-3 font-semibold text-slate-950"
+                  disabled={dailyBlocked || dailyLoading || remainingSecondsToday <= 0}
+                  className="mt-6 w-full rounded-2xl bg-white px-4 py-3 font-semibold text-slate-950 disabled:opacity-50"
                 >
                   Practice with AminSirAI
                 </button>
