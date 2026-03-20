@@ -52,7 +52,7 @@ export default function LoginPage() {
         localStorage.setItem("studentLoginId", data.student?.loginId || "");
       }
 
-      router.push("/ebook");
+      router.push("/student");
     } catch (err) {
       setError("Something went wrong during login");
     } finally {
