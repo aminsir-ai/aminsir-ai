@@ -61,10 +61,7 @@ function formatTime(totalSeconds) {
 
 function simpleScore(conversation, elapsedSeconds) {
   const studentTurns = conversation.filter((m) => m.role === "user").length;
-  const score = Math.min(
-    60 + studentTurns * 5 + (elapsedSeconds > 120 ? 10 : 0),
-    95
-  );
+  const score = Math.min(60 + studentTurns * 5 + (elapsedSeconds > 120 ? 10 : 0), 95);
 
   return {
     overall: score,
@@ -163,13 +160,6 @@ export default function SimplePracticePage() {
   const [saveStatus, setSaveStatus] = useState("idle");
   const [authChecked, setAuthChecked] = useState(false);
 
-  const [dailyLimitSeconds, setDailyLimitSeconds] = useState(15 * 60);
-  const [usedSecondsToday, setUsedSecondsToday] = useState(0);
-  const [remainingSecondsToday, setRemainingSecondsToday] = useState(15 * 60);
-  const [dailyBlocked, setDailyBlocked] = useState(false);
-  const [dailyLoading, setDailyLoading] = useState(false);
-  const [dailyMessage, setDailyMessage] = useState("");
-
   const recognitionRef = useRef(null);
   const timerRef = useRef(null);
   const stoppedRef = useRef(false);
@@ -179,7 +169,6 @@ export default function SimplePracticePage() {
   const phaseRef = useRef("lesson");
   const conversationRef = useRef([]);
   const endingSessionRef = useRef(false);
-  const sessionCapRef = useRef(10 * 60);
 
   const lessonSpeechLines = useMemo(
     () => [...LESSON.content, ...LESSON.parts, LESSON.closing],
@@ -187,43 +176,6 @@ export default function SimplePracticePage() {
   );
 
   const scoreMeta = score ? getScoreCardMeta(score.overall) : null;
-
-  async function fetchDailyLimit(currentStudentId) {
-    if (!currentStudentId) return;
-
-    setDailyLoading(true);
-    setDailyMessage("");
-
-    try {
-      const response = await fetch("/api/daily-limit", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          studentId: String(currentStudentId),
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setDailyMessage(data?.error || "Unable to load daily limit.");
-        setDailyLoading(false);
-        return;
-      }
-
-      setDailyLimitSeconds(Number(data.dailyLimitSeconds || 15 * 60));
-      setUsedSecondsToday(Number(data.usedSecondsToday || 0));
-      setRemainingSecondsToday(Number(data.remainingSeconds || 0));
-      setDailyBlocked(Boolean(data.blocked));
-    } catch (error) {
-      console.error("Daily limit fetch error:", error);
-      setDailyMessage("Unable to load daily limit.");
-    } finally {
-      setDailyLoading(false);
-    }
-  }
 
   async function saveProgressToSupabase({
     studentId,
@@ -285,10 +237,6 @@ export default function SimplePracticePage() {
     router.replace("/login");
   }
 
-  function goToProgress() {
-    router.push("/student/progress");
-  }
-
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
@@ -322,19 +270,11 @@ export default function SimplePracticePage() {
       setStudentName(finalName);
       setStudentId(finalId);
       setAuthChecked(true);
-
-      if (finalId) {
-        fetchDailyLimit(finalId);
-      }
     } catch {
       if (storedName) {
         setStudentName(storedName);
         setStudentId(String(storedId || ""));
         setAuthChecked(true);
-
-        if (storedId) {
-          fetchDailyLimit(String(storedId));
-        }
       } else {
         router.replace("/login");
       }
@@ -359,11 +299,7 @@ export default function SimplePracticePage() {
     };
 
     recognition.onresult = async (event) => {
-      if (
-        stoppedRef.current ||
-        processingRef.current ||
-        endingSessionRef.current
-      ) {
+      if (stoppedRef.current || processingRef.current || endingSessionRef.current) {
         return;
       }
 
@@ -564,50 +500,21 @@ export default function SimplePracticePage() {
   }
 
   async function startPractice() {
-    if (!studentId) {
-      setDailyMessage("Student not found. Please login again.");
-      return;
-    }
-
-    await fetchDailyLimit(studentId);
-
-    if (remainingSecondsToday <= 0 || dailyBlocked) {
-      setDailyMessage(
-        "Your 15-minute daily practice limit is finished for today."
-      );
-      return;
-    }
-
     stopLessonVoice();
     endingSessionRef.current = false;
     processingRef.current = false;
     stoppedRef.current = false;
-
-    const allowedSeconds = Math.min(
-      Number(remainingSecondsToday || 0),
-      10 * 60
-    );
-
-    if (allowedSeconds <= 0) {
-      setDailyMessage(
-        "Your 15-minute daily practice limit is finished for today."
-      );
-      return;
-    }
-
-    sessionCapRef.current = allowedSeconds;
 
     setPhase("practice");
     phaseRef.current = "practice";
     setConversation([]);
     conversationRef.current = [];
     setCurrentAiText("");
-    setTimeLeft(allowedSeconds);
+    setTimeLeft(10 * 60);
     setTimerRunning(true);
     setShowScoreCard(false);
     setScore(null);
     setSaveStatus("idle");
-    setDailyMessage("");
 
     let opening = "";
     try {
@@ -688,8 +595,7 @@ export default function SimplePracticePage() {
     stopCurrentAudio();
 
     const liveConversation = conversationRef.current;
-    const sessionCap = Number(sessionCapRef.current || 0);
-    const elapsedSeconds = Math.max(sessionCap - timeLeft, 0);
+    const elapsedSeconds = 10 * 60 - timeLeft;
     const finalScore = simpleScore(liveConversation, elapsedSeconds);
     const closing = `Great job today, ${studentName}. Keep practicing every day.`;
 
@@ -742,10 +648,6 @@ export default function SimplePracticePage() {
     });
 
     setSaveStatus(saved ? "saved" : "error");
-
-    if (studentId) {
-      await fetchDailyLimit(studentId);
-    }
   }
 
   function restart() {
@@ -798,64 +700,18 @@ export default function SimplePracticePage() {
               </p>
             </div>
 
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={goToProgress}
-                className="rounded-2xl border border-sky-700 bg-sky-950/30 px-4 py-2 text-sm font-semibold text-white"
-              >
-                📊 Progress
-              </button>
-
-              <button
-                onClick={handleLogout}
-                className="rounded-2xl border border-red-700 bg-red-950/30 px-4 py-2 text-sm font-semibold text-white"
-              >
-                Logout
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
-              <p className="text-sm text-slate-400">Logged in as</p>
-              <p className="mt-1 text-lg font-semibold text-white">{studentName}</p>
-            </div>
-
-            <div className="rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
-              <p className="text-sm text-slate-400">Used today</p>
-              <p className="mt-1 text-lg font-semibold text-white">
-                {dailyLoading ? "Loading..." : formatTime(usedSecondsToday)}
-              </p>
-            </div>
-
-            <div className="rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
-              <p className="text-sm text-slate-400">Remaining today</p>
-              <p className="mt-1 text-lg font-semibold text-white">
-                {dailyLoading ? "Loading..." : formatTime(remainingSecondsToday)}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/80 p-3 sm:hidden">
             <button
-              onClick={goToProgress}
-              className="w-full rounded-2xl border border-sky-700 bg-sky-950/30 px-4 py-3 text-sm font-semibold text-white"
+              onClick={handleLogout}
+              className="rounded-2xl border border-red-700 bg-red-950/30 px-4 py-2 text-sm font-semibold text-white"
             >
-              📊 View Full Progress Dashboard
+              Logout
             </button>
           </div>
 
-          {dailyBlocked ? (
-            <div className="mt-4 rounded-2xl border border-red-800 bg-red-950/30 px-4 py-3 text-sm text-red-300">
-              Your 15-minute daily practice limit is finished for today.
-            </div>
-          ) : null}
-
-          {dailyMessage ? (
-            <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-200">
-              {dailyMessage}
-            </div>
-          ) : null}
+          <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950 px-4 py-3">
+            <p className="text-sm text-slate-400">Logged in as</p>
+            <p className="mt-1 text-lg font-semibold text-white">{studentName}</p>
+          </div>
         </div>
 
         {phase === "lesson" && (
@@ -878,9 +734,7 @@ export default function SimplePracticePage() {
                 </button>
               </div>
 
-              <h2 className="mt-5 text-lg font-semibold sm:text-xl">
-                Talking E-book Lesson
-              </h2>
+              <h2 className="mt-5 text-lg font-semibold sm:text-xl">Talking E-book Lesson</h2>
 
               <div className="mt-5 space-y-4 text-[15px] leading-7 text-slate-200 sm:text-[16px] sm:leading-8">
                 {LESSON.content.map((line, index) => (
@@ -888,9 +742,7 @@ export default function SimplePracticePage() {
                 ))}
 
                 <div className="rounded-2xl border border-slate-700 bg-slate-950 p-4">
-                  <h3 className="mb-3 text-base font-semibold sm:text-lg">
-                    9 Materials of English
-                  </h3>
+                  <h3 className="mb-3 text-base font-semibold sm:text-lg">9 Materials of English</h3>
                   <div className="grid gap-2 sm:grid-cols-2">
                     {LESSON.parts.map((item) => (
                       <div
@@ -923,17 +775,9 @@ export default function SimplePracticePage() {
 
                 <button
                   onClick={startPractice}
-                  disabled={dailyBlocked || dailyLoading || remainingSecondsToday <= 0}
-                  className="mt-6 w-full rounded-2xl bg-white px-4 py-3 font-semibold text-slate-950 disabled:opacity-50"
+                  className="mt-6 w-full rounded-2xl bg-white px-4 py-3 font-semibold text-slate-950"
                 >
                   Practice with AminSirAI
-                </button>
-
-                <button
-                  onClick={goToProgress}
-                  className="mt-3 w-full rounded-2xl border border-sky-700 bg-sky-950/30 px-4 py-3 font-semibold text-white"
-                >
-                  📊 View Progress
                 </button>
               </div>
             </aside>
@@ -960,9 +804,7 @@ export default function SimplePracticePage() {
               </div>
 
               <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950 p-4 sm:mt-6">
-                <p className="text-sm uppercase tracking-wide text-slate-400">
-                  Current AI Voice
-                </p>
+                <p className="text-sm uppercase tracking-wide text-slate-400">Current AI Voice</p>
                 <p className="mt-2 text-base leading-7 text-white sm:text-lg sm:leading-8">
                   {currentAiText}
                 </p>
@@ -1009,11 +851,7 @@ export default function SimplePracticePage() {
                 <div className="mt-4 grid gap-3">
                   <button
                     onClick={startListening}
-                    disabled={
-                      isListening ||
-                      phase === "finished" ||
-                      isAiSpeakingRef.current
-                    }
+                    disabled={isListening || phase === "finished" || isAiSpeakingRef.current}
                     className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 font-medium disabled:opacity-50"
                   >
                     {isListening ? "Listening..." : "Speak Now"}
@@ -1025,13 +863,6 @@ export default function SimplePracticePage() {
                   >
                     End Session
                   </button>
-
-                  <button
-                    onClick={goToProgress}
-                    className="rounded-2xl border border-sky-700 bg-sky-950/30 px-4 py-3 font-medium text-white"
-                  >
-                    📊 View Progress
-                  </button>
                 </div>
               </div>
             </aside>
@@ -1041,14 +872,10 @@ export default function SimplePracticePage() {
         {showScoreCard && score && scoreMeta && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-3 py-4 sm:px-4">
             <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-slate-700 bg-slate-900 p-4 shadow-2xl sm:p-6">
-              <div
-                className={`rounded-3xl border ${scoreMeta.border} ${scoreMeta.bg} p-3 sm:p-5`}
-              >
+              <div className={`rounded-3xl border ${scoreMeta.border} ${scoreMeta.bg} p-3 sm:p-5`}>
                 <div className="flex flex-col items-center text-center">
                   <div className="text-4xl sm:text-6xl">{scoreMeta.trophy}</div>
-                  <div className="mt-2 text-3xl sm:mt-3 sm:text-5xl">
-                    {scoreMeta.image}
-                  </div>
+                  <div className="mt-2 text-3xl sm:mt-3 sm:text-5xl">{scoreMeta.image}</div>
                   <p
                     className={`mt-3 inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold sm:px-4 sm:text-sm ${scoreMeta.border} ${scoreMeta.text}`}
                   >
@@ -1075,30 +902,22 @@ export default function SimplePracticePage() {
                 </p>
               </div>
 
-              <div className="mt-4 grid gap-2 sm:mt-5 sm:grid-cols-2 sm:gap-3">
+              <div className="mt-4 grid gap-2 sm:mt-5 sm:gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3 sm:p-4">
                   <p className="text-slate-400">Speaking</p>
-                  <p className="mt-1 text-xl font-semibold sm:text-2xl">
-                    {score.speaking}/10
-                  </p>
+                  <p className="mt-1 text-xl font-semibold sm:text-2xl">{score.speaking}/10</p>
                 </div>
                 <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3 sm:p-4">
                   <p className="text-slate-400">Grammar</p>
-                  <p className="mt-1 text-xl font-semibold sm:text-2xl">
-                    {score.grammar}/10
-                  </p>
+                  <p className="mt-1 text-xl font-semibold sm:text-2xl">{score.grammar}/10</p>
                 </div>
                 <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3 sm:p-4">
                   <p className="text-slate-400">Vocabulary</p>
-                  <p className="mt-1 text-xl font-semibold sm:text-2xl">
-                    {score.vocabulary}/10
-                  </p>
+                  <p className="mt-1 text-xl font-semibold sm:text-2xl">{score.vocabulary}/10</p>
                 </div>
                 <div className="rounded-2xl border border-slate-800 bg-slate-950 p-3 sm:p-4">
                   <p className="text-slate-400">Confidence</p>
-                  <p className="mt-1 text-xl font-semibold sm:text-2xl">
-                    {score.confidence}/10
-                  </p>
+                  <p className="mt-1 text-xl font-semibold sm:text-2xl">{score.confidence}/10</p>
                 </div>
               </div>
 
@@ -1114,14 +933,11 @@ export default function SimplePracticePage() {
                   {LESSON.wordOfDay.hindiMeaning}
                 </p>
                 <p className="mt-1 text-sm leading-6 text-slate-300 sm:mt-2 sm:text-base sm:leading-7">
-                  <span className="font-semibold">Example:</span>{" "}
-                  {LESSON.wordOfDay.example}
+                  <span className="font-semibold">Example:</span> {LESSON.wordOfDay.example}
                 </p>
               </div>
 
-              <div
-                className={`mt-4 rounded-2xl border ${scoreMeta.border} ${scoreMeta.bg} p-3 sm:mt-5 sm:p-4`}
-              >
+              <div className={`mt-4 rounded-2xl border ${scoreMeta.border} ${scoreMeta.bg} p-3 sm:mt-5 sm:p-4`}>
                 <p className="text-sm font-semibold sm:text-base">Coach Tip</p>
                 <p className="mt-1 text-sm leading-6 text-slate-200 sm:mt-2 sm:text-base">
                   {scoreMeta.tip}
@@ -1129,16 +945,11 @@ export default function SimplePracticePage() {
               </div>
 
               <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950 p-3 sm:mt-5 sm:p-4">
-                <p className="text-sm font-semibold text-slate-200">
-                  Progress Save Status
-                </p>
+                <p className="text-sm font-semibold text-slate-200">Progress Save Status</p>
                 <p className="mt-1 text-sm text-slate-300">
-                  {saveStatus === "saving" &&
-                    "Saving progress to Supabase..."}
-                  {saveStatus === "saved" &&
-                    "Progress saved successfully."}
-                  {saveStatus === "error" &&
-                    "Progress save failed. Please check API route or env keys."}
+                  {saveStatus === "saving" && "Saving progress to Supabase..."}
+                  {saveStatus === "saved" && "Progress saved successfully."}
+                  {saveStatus === "error" && "Progress save failed. Please check API route or env keys."}
                   {saveStatus === "idle" && "Progress not saved yet."}
                 </p>
               </div>
@@ -1156,13 +967,6 @@ export default function SimplePracticePage() {
                   className="flex-1 rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 font-semibold"
                 >
                   Close
-                </button>
-
-                <button
-                  onClick={goToProgress}
-                  className="flex-1 rounded-2xl border border-sky-700 bg-sky-950/30 px-4 py-3 font-semibold text-white"
-                >
-                  📊 Progress
                 </button>
               </div>
             </div>

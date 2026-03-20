@@ -1,25 +1,25 @@
 import OpenAI from "openai";
 
+export const runtime = "nodejs";
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export async function POST(req) {
+export async function POST(request) {
   try {
-    const body = await req.json();
+    const body = await request.json();
     const text = String(body?.text || "").trim();
 
     if (!text) {
-      return new Response("Missing text", { status: 400 });
+      return new Response("Text is required", { status: 400 });
     }
 
     const mp3 = await openai.audio.speech.create({
       model: "gpt-4o-mini-tts",
-      voice: "cedar",
+      voice: "alloy",
       input: text,
-      format: "mp3",
-      instructions:
-        "Speak in a warm, natural, friendly teacher voice. Keep the tone calm, clear, and conversational. Avoid sounding robotic. Pronounce simple Indian names naturally when possible.",
+      speed: 1.05,   // 🔥 faster + energetic
     });
 
     const buffer = Buffer.from(await mp3.arrayBuffer());
@@ -32,7 +32,7 @@ export async function POST(req) {
       },
     });
   } catch (error) {
-    console.error("tts route error:", error);
-    return new Response("TTS failed", { status: 500 });
+    console.error("TTS route error:", error);
+    return new Response("Failed to generate speech", { status: 500 });
   }
 }
