@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const SESSION_TIME = 600;
 const TOTAL_TOPICS = 10;
@@ -102,6 +102,7 @@ const PRONOUN_ITEMS = [
 ];
 
 const LESSON_ITEMS = [...NOUN_ITEMS, ...PRONOUN_ITEMS];
+const LESSON_NAME = "Amin Sir AI E-Book Practice";
 
 function normalizeText(text) {
   return String(text || "")
@@ -166,6 +167,7 @@ function getPatternLabel(pattern) {
 }
 
 export default function ChatPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const inputRef = useRef(null);
   const topicIndexRef = useRef(0);
@@ -181,8 +183,50 @@ export default function ChatPage() {
       searchParams.get("studentName") ||
       searchParams.get("student") ||
       searchParams.get("name");
-    return fromQuery?.trim() || "Student";
+
+    if (fromQuery?.trim()) return fromQuery.trim();
+
+    if (typeof window !== "undefined") {
+      try {
+        const rawStudent = localStorage.getItem("student");
+        const storedName = localStorage.getItem("studentName");
+
+        if (rawStudent) {
+          const parsed = JSON.parse(rawStudent);
+          if (parsed?.name) return String(parsed.name).trim();
+        }
+
+        if (storedName) return String(storedName).trim();
+      } catch {}
+    }
+
+    return "Student";
   }, [searchParams]);
+
+  const studentId = useMemo(() => {
+    const fromQuery =
+      searchParams.get("studentId") ||
+      searchParams.get("id");
+
+    if (fromQuery?.trim()) return fromQuery.trim();
+
+    if (typeof window !== "undefined") {
+      try {
+        const rawStudent = localStorage.getItem("student");
+        const storedId = localStorage.getItem("studentId");
+
+        if (rawStudent) {
+          const parsed = JSON.parse(rawStudent);
+          if (parsed?.id) return String(parsed.id).trim();
+          if (parsed?.studentId) return String(parsed.studentId).trim();
+        }
+
+        if (storedId) return String(storedId).trim();
+      } catch {}
+    }
+
+    return studentName.trim().toLowerCase().replace(/\s+/g, "_");
+  }, [searchParams, studentName]);
 
   const [started, setStarted] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
@@ -192,6 +236,7 @@ export default function ChatPage() {
   const [score, setScore] = useState(0);
   const [status, setStatus] = useState("Ready");
   const [wordOfDay, setWordOfDay] = useState({ word: "", meaning: "" });
+  const [saveStatus, setSaveStatus] = useState("idle");
 
   const [topicIndex, setTopicIndex] = useState(0);
   const [patternIndex, setPatternIndex] = useState(0);
@@ -318,6 +363,44 @@ export default function ChatPage() {
       } catch {}
     };
   }, [started, sessionEnded]);
+
+  async function saveChatProgress({
+    studentId,
+    studentName,
+    lessonName,
+    score,
+    totalTopics,
+    timeSpentSeconds,
+  }) {
+    try {
+      const response = await fetch("/api/student/save-chat-progress", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          studentId,
+          studentName,
+          lessonName,
+          score,
+          totalTopics,
+          timeSpentSeconds,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        console.error("Failed to save chat progress:", result);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Save chat progress error:", error);
+      return false;
+    }
+  }
 
   function speakText(text) {
     if (typeof window === "undefined" || !window.speechSynthesis || !text) return;
@@ -524,6 +607,7 @@ export default function ChatPage() {
     setSessionEnded(false);
     setStarted(true);
     setStatus("Lesson started");
+    setSaveStatus("idle");
 
     const welcomeText = `Welcome, ${studentName}. Aaj hamara lesson Noun aur Pronoun hai. Main aapko word dunga. Aapko English mein bolna hai. Speech box mein aapka jawab aa jayega. Sahi hua to very good. Galat hua to try again. Do baar galat hua to main sentence sikhaunga.`;
     addAiMessage(welcomeText);
@@ -533,7 +617,7 @@ export default function ChatPage() {
     }, 400);
   }
 
-  function stopSession(showPopup = true) {
+  async function stopSession(showPopup = true) {
     if (finishedRef.current) return;
     finishedRef.current = true;
 
@@ -544,9 +628,29 @@ export default function ChatPage() {
     setCurrentPrompt("");
     addAiMessage("Excellent work. Keep practicing.");
 
+    const timeSpentSeconds = Math.max(SESSION_TIME - timeLeft, 0);
+    setSaveStatus("saving");
+
+    const saved = await saveChatProgress({
+      studentId:
+        studentId ||
+        studentName.trim().toLowerCase().replace(/\s+/g, "_"),
+      studentName: studentName || "Student",
+      lessonName: LESSON_NAME,
+      score,
+      totalTopics: TOTAL_TOPICS,
+      timeSpentSeconds,
+    });
+
+    setSaveStatus(saved ? "saved" : "error");
+
     if (showPopup) {
       setShowScore(true);
     }
+  }
+
+  function goToProgress() {
+    router.push("/student/progress");
   }
 
   const progressPercent = Math.round((score / TOTAL_TOPICS) * 100);
@@ -566,7 +670,33 @@ export default function ChatPage() {
           margin: "0 auto",
         }}
       >
-        <h2 style={{ marginBottom: 16 }}>Amin Sir AI E-Book Practice</h2>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+            marginBottom: 16,
+          }}
+        >
+          <h2 style={{ margin: 0 }}>Amin Sir AI E-Book Practice</h2>
+
+          <button
+            onClick={goToProgress}
+            style={{
+              padding: "10px 16px",
+              border: "none",
+              borderRadius: 10,
+              background: "#0f172a",
+              color: "#fff",
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            📊 View Progress
+          </button>
+        </div>
 
         <div
           style={{
@@ -936,7 +1066,8 @@ export default function ChatPage() {
                 background: "#fff",
                 borderRadius: 14,
                 padding: 24,
-                width: 320,
+                width: 340,
+                maxWidth: "100%",
                 textAlign: "center",
               }}
             >
@@ -950,21 +1081,52 @@ export default function ChatPage() {
               <div style={{ fontSize: 26, fontWeight: "bold", marginBottom: 8 }}>
                 {score} / {TOTAL_TOPICS}
               </div>
-              <p style={{ marginBottom: 16 }}>{getFeedback(score)}</p>
-              <button
-                onClick={() => window.location.reload()}
+              <p style={{ marginBottom: 12 }}>{getFeedback(score)}</p>
+
+              <p style={{ marginBottom: 16, fontSize: 13, color: "#555" }}>
+                {saveStatus === "saving" && "Saving progress..."}
+                {saveStatus === "saved" && "Progress saved successfully."}
+                {saveStatus === "error" && "Progress save failed."}
+                {saveStatus === "idle" && ""}
+              </p>
+
+              <div
                 style={{
-                  padding: "10px 18px",
-                  border: "none",
-                  borderRadius: 8,
-                  background: "#222",
-                  color: "#fff",
-                  cursor: "pointer",
-                  fontWeight: "bold",
+                  display: "flex",
+                  gap: 10,
+                  flexDirection: "column",
                 }}
               >
-                Restart
-              </button>
+                <button
+                  onClick={() => window.location.reload()}
+                  style={{
+                    padding: "10px 18px",
+                    border: "none",
+                    borderRadius: 8,
+                    background: "#222",
+                    color: "#fff",
+                    cursor: "pointer",
+                    fontWeight: "bold",
+                  }}
+                >
+                  Restart
+                </button>
+
+                <button
+                  onClick={goToProgress}
+                  style={{
+                    padding: "10px 18px",
+                    border: "none",
+                    borderRadius: 8,
+                    background: "#1d4ed8",
+                    color: "#fff",
+                    cursor: "pointer",
+                    fontWeight: "bold",
+                  }}
+                >
+                  📊 View Progress
+                </button>
+              </div>
             </div>
           </div>
         )}
